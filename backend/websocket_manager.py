@@ -1,9 +1,7 @@
 import asyncio
 import websockets
 import json
-import cv2
 import boto3
-import numpy as np
 
 class WebSocketManager:
     """Manages WebSocket connections and broadcasts to connected frontend clients."""
