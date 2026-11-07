@@ -1,38 +1,37 @@
-.App {
-  text-align: center;
+:root {
+  --bg: #0b0d10;
+  --panel: #14181d;
+  --text: #e8ecf1;
+  --muted: #8b95a1;
+  --accent: #34d399;
 }
 
-.App-logo {
-  height: 40vmin;
-  pointer-events: none;
-}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; }
 
-@media (prefers-reduced-motion: no-preference) {
-  .App-logo {
-    animation: App-logo-spin infinite 20s linear;
-  }
-}
+.app { min-height: 100vh; display: flex; flex-direction: column; }
+.app__header { padding: 14px 20px; font-weight: 600; letter-spacing: .04em; color: var(--muted); }
 
-.App-header {
-  background-color: #282c34;
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  font-size: calc(10px + 2vmin);
-  color: white;
-}
+.tile { position: relative; background: #000; border-radius: 10px; overflow: hidden; aspect-ratio: 16 / 9; outline: 2px solid transparent; transition: outline-color .15s, transform .15s; }
+.tile[role='button'] { cursor: pointer; }
+.tile[role='button']:hover, .tile[role='button']:focus-visible { outline-color: var(--accent); transform: translateY(-2px); }
+.tile video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tile--main video { object-fit: contain; }
+.tile__label { position: absolute; left: 8px; bottom: 8px; padding: 3px 8px; font-size: 12px; border-radius: 6px; background: rgba(0,0,0,.6); pointer-events: none; }
+.tile--main .tile__label { top: 10px; bottom: auto; font-size: 14px; }
+.tile__label kbd { margin-right: 6px; color: var(--accent); font: inherit; font-weight: 700; }
 
-.App-link {
-  color: #61dafb;
-}
+.grid { padding: 8px 20px 24px; display: grid; gap: 14px; grid-template-columns: repeat(4, 1fr); }
+.grid .tile:nth-child(n+5) { grid-column: span 1; }
 
-@keyframes App-logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+.focus { position: relative; flex: 1; padding: 0 20px 24px; display: flex; flex-direction: column; gap: 14px; }
+.strip { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+.focus > .tile--main { width: 100%; max-height: 72vh; margin: 0 auto; }
+
+.back { align-self: flex-start; background: var(--panel); color: var(--text); border: 1px solid #262c34; border-radius: 8px; padding: 8px 14px; cursor: pointer; }
+.back:hover { border-color: var(--accent); }
+
+@media (max-width: 900px) {
+  .grid { grid-template-columns: repeat(2, 1fr); }
+  .strip { grid-template-columns: repeat(3, 1fr); }
 }
