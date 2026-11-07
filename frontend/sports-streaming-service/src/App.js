@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import './App.css';
 import { FEEDS } from './feeds';
 import VideoTile from './components/VideoTile';
-import Icon from './components/Icon';
+import { Moon, Pause, Play, Sun } from 'lucide-react';
 import MainPlayer from './components/MainPlayer';
 
 function App() {
@@ -41,10 +41,10 @@ function App() {
     <div className="app" data-theme={theme}>
       <a className="skip-link" href="#matches">Skip to player</a>
       <header className="app-header">
-        <span className="brand"><Icon name="play" size={20} />Match Switcher</span>
+        <span className="brand"><Play size={20} aria-hidden="true" />Match Switcher</span>
         <button className="theme-toggle" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
           aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
-          <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
+          {theme === 'dark' ? <Sun size={20} aria-hidden="true" /> : <Moon size={20} aria-hidden="true" />}
           <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
         </button>
       </header>
@@ -56,7 +56,7 @@ function App() {
           <button className="icon-button" aria-label={previewsPaused ? 'Resume previews' : 'Pause previews'}
             title={previewsPaused ? 'Resume previews' : 'Pause previews'} aria-pressed={previewsPaused}
             onClick={() => setPreviewsPaused(!previewsPaused)}>
-            <Icon name={previewsPaused ? 'play' : 'pause'} size={18} />
+            {previewsPaused ? <Play size={18} aria-hidden="true" /> : <Pause size={18} aria-hidden="true" />}
           </button>
         </div>
         <div className="filmstrip" role="region" aria-label="Other matches">
