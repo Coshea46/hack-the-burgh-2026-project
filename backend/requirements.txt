@@ -1,3 +1,5 @@
-opencv-python-headless==4.8.1.78
+numpy<2
 boto3==1.28.62
 websockets==11.0.3
+imageio==2.33.1
+imageio-ffmpeg==0.4.9
