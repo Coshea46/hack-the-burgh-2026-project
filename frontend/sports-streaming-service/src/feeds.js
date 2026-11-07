@@ -5,13 +5,13 @@ const PREVIEW_BASE_URL = (process.env.REACT_APP_PREVIEW_BASE_URL || S3_BASE_URL)
 const TEST_VIDEO_KEY = process.env.REACT_APP_TEST_VIDEO_KEY || DEFAULT_KEY;
 const PREVIEW_KEY = process.env.REACT_APP_TEST_PREVIEW_KEY;
 
-// Previews are served from S3 (previews/<name>-preview-v1.mp4), never bundled with the app.
+// Previews live next to their main video in S3 (matches/<name>-preview-v1.mp4), never bundled with the app.
 // Give each real match its own mainKey and matching previewKey.
 export const FEEDS = Array.from({ length: 7 }, (_, i) => ({
   id: i + 1,
   label: `Match ${i + 1}`,
   mainKey: TEST_VIDEO_KEY,
-  previewKey: PREVIEW_KEY || `previews/${TEST_VIDEO_KEY.split('/').pop().replace(/\.mp4$/i, '')}-preview-v1.mp4`,
+  previewKey: PREVIEW_KEY || TEST_VIDEO_KEY.replace(/\.mp4$/i, '-preview-v1.mp4'),
 }));
 const objectUrl = (base, key) => `${base}/${key.split('/').map(encodeURIComponent).join('/')}`;
 export const getVideoUrl = (feed) => objectUrl(S3_BASE_URL, feed.mainKey || feed.key);
