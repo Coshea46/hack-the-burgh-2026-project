@@ -92,3 +92,16 @@ h2 { margin: 0; color: var(--muted); font-size: 13px; font-weight: 500; }
   .tile[role='button']:active, .theme-toggle:active, .icon-button:active,
   .filmstrip .tile:hover video.is-ready, .filmstrip .tile:focus-visible video.is-ready { transform: none; }
 }
+
+/* ---------- Backend connection ---------- */
+.header-actions { display: flex; align-items: center; gap: 10px; }
+.connection { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+.connection__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); transition: background-color var(--fast) var(--ease); }
+.connection--connected .connection__dot { background: #3fb950; }
+.connection--offline .connection__dot { background: #e5484d; }
+.theme-toggle[aria-pressed='true'] { border-color: var(--accent); }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+@media (max-width: 600px) {
+  .header-actions { gap: 6px; }
+  .connection__label { display: none; }
+}

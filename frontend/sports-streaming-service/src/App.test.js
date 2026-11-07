@@ -132,3 +132,96 @@ test('seek targets remain within the destination duration', () => {
   expect(boundedTime(-10, 100)).toBe(0);
   expect(boundedTime(25, NaN)).toBe(25);
 });
+
+describe('backend WebSocket', () => {
+  const { act } = require('@testing-library/react');
+  const { feedIdFromTarget } = require('./feeds');
+  const socket = () => global.FakeWebSocket.instances.at(-1);
+  const send = (message) => act(() => { socket().open(); socket().receive(message); });
+
+  test('maps backend feed names to matches', () => {
+    expect(feedIdFromTarget('cam-3')).toBe(3);
+    expect(feedIdFromTarget('3')).toBe(3);
+    expect(feedIdFromTarget(7)).toBe(7);
+    expect(feedIdFromTarget('cam-9')).toBeNull();
+    expect(feedIdFromTarget(undefined)).toBeNull();
+  });
+
+  test('connects to the backend and shows the connection state', () => {
+    render(<App />);
+    expect(socket().url).toBe('ws://localhost:8000');
+    expect(screen.getByText('Connecting')).toBeInTheDocument();
+    act(() => socket().open());
+    expect(screen.getByText('Live')).toBeInTheDocument();
+  });
+
+  test('a switch message changes the main match without stealing focus', () => {
+    render(<App />);
+    const toggle = screen.getByRole('button', { name: 'Auto' });
+    toggle.focus();
+    send({ type: 'switch', target_feed: 'cam-3', from_timestamp: '0', to_timestamp: '5', window_id: 1 });
+    expect(screen.getByLabelText('Match 3 video')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Match 3' })).not.toHaveFocus();
+    expect(toggle).toHaveFocus();
+    expect(screen.getByText('Switched to Match 3')).toBeInTheDocument();
+  });
+
+  test('unknown feeds and malformed messages are ignored', () => {
+    render(<App />);
+    send({ type: 'switch', target_feed: 'cam-42' });
+    act(() => socket().receive('not json'));
+    expect(screen.getByLabelText('Match 1 video')).toBeInTheDocument();
+  });
+
+  test('a manual pick holds off automatic switches for 30 seconds', () => {
+    jest.useFakeTimers();
+    try {
+      render(<App />);
+      fireEvent.click(screen.getByRole('button', { name: 'Match 2' }));
+      expect(screen.getByRole('button', { name: 'Auto paused' })).toBeInTheDocument();
+      send({ type: 'switch', target_feed: 'cam-4' });
+      expect(screen.getByLabelText('Match 2 video')).toBeInTheDocument();
+      act(() => { jest.advanceTimersByTime(30001); });
+      expect(screen.getByRole('button', { name: 'Auto' })).toBeInTheDocument();
+      send({ type: 'switch', target_feed: 'cam-4' });
+      expect(screen.getByLabelText('Match 4 video')).toBeInTheDocument();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('turning Auto off ignores the backend', () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Auto' }));
+    expect(screen.getByRole('button', { name: 'Auto off' })).toHaveAttribute('aria-pressed', 'false');
+    send({ type: 'switch', target_feed: 'cam-5' });
+    expect(screen.getByLabelText('Match 1 video')).toBeInTheDocument();
+  });
+
+  test('sync seeks the main player to the live timestamp once', () => {
+    render(<App />);
+    const main = screen.getByLabelText('Match 1 video');
+    ready(main);
+    send({ type: 'sync', current_live_timestamp: 125 });
+    expect(main.currentTime).toBe(125);
+    main.currentTime = 200;
+    act(() => { socket().drop(); });
+    send({ type: 'sync', current_live_timestamp: 0 });
+    expect(main.currentTime).toBe(200);
+  });
+
+  test('reconnects with backoff after the backend drops', () => {
+    jest.useFakeTimers();
+    try {
+      render(<App />);
+      act(() => socket().open());
+      act(() => socket().drop());
+      expect(screen.getByText('Offline')).toBeInTheDocument();
+      const before = global.FakeWebSocket.instances.length;
+      act(() => { jest.advanceTimersByTime(1000); });
+      expect(global.FakeWebSocket.instances.length).toBe(before + 1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});

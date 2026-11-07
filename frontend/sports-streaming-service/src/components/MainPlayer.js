@@ -7,7 +7,7 @@ export function boundedTime(time, duration) {
 }
 
 // The DOM element survives every selection. Only a genuinely different URL loads.
-export default function MainPlayer({ feed, clock }) {
+export default function MainPlayer({ feed, clock, seekTo }) {
   const ref = useRef(null);
   const source = getVideoUrl(feed);
   const [loading, setLoading] = useState(true);
@@ -81,6 +81,21 @@ export default function MainPlayer({ feed, clock }) {
       Object.entries(listeners).forEach(([event, handler]) => video.removeEventListener(event, handler));
     };
   }, [source, clock, retry]);
+
+  // External seek (the backend's live timestamp). Declared after the effect above
+  // so its metadata listener runs last and wins. Previews follow via the shared clock.
+  useEffect(() => {
+    if (!seekTo) return undefined;
+    const video = ref.current;
+    clock.current.time = seekTo.time;
+    const apply = () => { video.currentTime = boundedTime(seekTo.time, video.duration); };
+    if (video.readyState >= 1) {
+      apply();
+      return undefined;
+    }
+    video.addEventListener('loadedmetadata', apply, { once: true });
+    return () => video.removeEventListener('loadedmetadata', apply);
+  }, [seekTo, clock]);
 
   return (
     <div className="tile tile--main" aria-busy={loading} style={{ viewTransitionName: 'main-player' }}>
