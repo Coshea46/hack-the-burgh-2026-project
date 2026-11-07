@@ -20,5 +20,3 @@ services:
       - REACT_APP_WS_URL=ws://localhost:8000
     stdin_open: true
     tty: true
-    depends_on:
-      - backend
