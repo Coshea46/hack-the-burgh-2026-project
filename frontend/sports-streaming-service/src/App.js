@@ -1,37 +1,71 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import './App.css';
 import { FEEDS } from './feeds';
-import FeedGrid from './components/FeedGrid';
-import FocusView from './components/FocusView';
+import VideoTile from './components/VideoTile';
+import Icon from './components/Icon';
+import MainPlayer from './components/MainPlayer';
 
 function App() {
-  // null = grid view. A backend-driven switch can simply call setFocusedId.
-  const [focusedId, setFocusedId] = useState(null);
+  const [focusedId, setFocusedId] = useState(FEEDS[0].id);
+  const [previewsPaused, setPreviewsPaused] = useState(false);
+  const [theme, setTheme] = useState(() => {
+    try { return localStorage.getItem('match-switcher-theme') === 'light' ? 'light' : 'dark'; }
+    catch { return 'dark'; }
+  });
+  const clock = useRef({ time: 0, playing: true, rate: 1, muted: false, volume: 1 });
+  const headingRef = useRef(null);
+  const previousId = useRef(focusedId);
+  const focused = FEEDS.find((feed) => feed.id === focusedId);
 
   useEffect(() => {
-    const onKey = (e) => {
-      if (e.key === 'Escape') return setFocusedId(null);
-      const n = Number(e.key);
-      if (FEEDS.some((f) => f.id === n)) setFocusedId(n);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+    try { localStorage.setItem('match-switcher-theme', theme); } catch {}
+    document.documentElement.dataset.theme = theme;
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = theme === 'dark' ? '#101216' : '#f4f5f7';
+  }, [theme]);
+
+  useEffect(() => {
+    if (focusedId !== previousId.current) headingRef.current?.focus();
+    previousId.current = focusedId;
+  }, [focusedId]);
+
+  const onPlayerKey = (event) => {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.target.closest('video')) return;
+    // Single-key shortcuts are active only while focus is in the player area.
+    const id = Number(event.key);
+    if (FEEDS.some((feed) => feed.id === id)) setFocusedId(id);
+    if (event.key === 'Escape') document.querySelector('.filmstrip .tile:not([hidden])[role="button"]')?.focus();
+  };
 
   return (
-    <div className="app">
-      <header className="app__header">Match Switcher</header>
-      {focusedId == null ? (
-        <FeedGrid onPick={setFocusedId} />
-      ) : (
-        <FocusView
-          focusedId={focusedId}
-          onPick={setFocusedId}
-          onBack={() => setFocusedId(null)}
-        />
-      )}
+    <div className="app" data-theme={theme}>
+      <a className="skip-link" href="#matches">Skip to player</a>
+      <header className="app-header">
+        <span className="brand"><Icon name="play" size={20} />Match Switcher</span>
+        <button className="theme-toggle" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+          aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
+          <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
+          <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
+        </button>
+      </header>
+      <main id="matches" className="player-layout" tabIndex={-1} onKeyDown={onPlayerKey}>
+        <h1 ref={headingRef} tabIndex={-1}>{focused.label}</h1>
+        <MainPlayer feed={focused} clock={clock} />
+        <div className="strip-toolbar">
+          <h2>Other matches</h2>
+          <button className="icon-button" aria-label={previewsPaused ? 'Resume previews' : 'Pause previews'}
+            title={previewsPaused ? 'Resume previews' : 'Pause previews'} aria-pressed={previewsPaused}
+            onClick={() => setPreviewsPaused(!previewsPaused)}>
+            <Icon name={previewsPaused ? 'play' : 'pause'} size={18} />
+          </button>
+        </div>
+        <div className="filmstrip" role="region" aria-label="Other matches">
+          {FEEDS.map((feed) => (
+            <VideoTile key={feed.id} feed={feed} hidden={feed.id === focusedId} clock={clock} paused={previewsPaused} onClick={() => setFocusedId(feed.id)} />
+          ))}
+        </div>
+      </main>
     </div>
   );
 }
-
 export default App;
