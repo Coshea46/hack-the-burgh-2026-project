@@ -83,10 +83,10 @@ export default function MainPlayer({ feed, clock }) {
   }, [source, clock, retry]);
 
   return (
-    <div className="tile tile--main" aria-busy={loading}>
+    <div className="tile tile--main" aria-busy={loading} style={{ viewTransitionName: 'main-player' }}>
       <div className="tile__media">
         <video ref={ref} aria-label={feed.label + ' video'} controls loop playsInline preload="auto" />
-        {loading && <span className="player-status" role="status">Loading match...</span>}
+        <span className={`player-status ${loading ? 'is-visible' : ''}`} role="status">{loading ? 'Loading match...' : ''}</span>
         {error && <div className="player-error" role="alert">
           <span>Video unavailable.</span>
           <button className="theme-toggle" onClick={() => setRetry((value) => value + 1)}>Retry</button>

@@ -65,3 +65,30 @@ h2 { margin: 0; color: var(--muted); font-size: 13px; font-weight: 500; }
 .tile__media { position: relative; }
 .player-status, .preview-status { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; background: #101216; color: #f3f5fa; font-size: 12px; }
 .player-error { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 12px; background: #101216; color: #f3f5fa; }
+/* ---------- Motion ---------- */
+:root { --ease: cubic-bezier(.22, .61, .36, 1); --fast: 160ms; --slow: 280ms; }
+
+/* Hover, focus and press feedback eases instead of snapping. */
+.tile, .theme-toggle, .icon-button { transition: border-color var(--fast) var(--ease), background-color var(--fast) var(--ease), color var(--fast) var(--ease), transform var(--fast) var(--ease); }
+.tile[role='button']:active, .theme-toggle:active, .icon-button:active { transform: scale(.97); }
+.tile__media { overflow: hidden; }
+
+/* Previews fade in once they have a frame, and come forward on hover. */
+.filmstrip video { opacity: 0; transition: opacity var(--slow) var(--ease), transform var(--slow) var(--ease); }
+.filmstrip video.is-ready { opacity: .85; }
+.filmstrip .tile:hover video.is-ready, .filmstrip .tile:focus-visible video.is-ready { opacity: 1; transform: scale(1.03); }
+
+/* Loading text appears only if loading is slow, and fades out when ready. */
+.player-status { opacity: 0; visibility: hidden; transition: opacity 200ms var(--ease), visibility 0s linear 200ms; }
+.player-status.is-visible { opacity: 1; visibility: visible; transition: opacity 200ms var(--ease) 250ms, visibility 0s; }
+
+/* View Transitions: tiles slide into place, the player and heading crossfade. */
+::view-transition-group(*) { animation-duration: var(--slow); animation-timing-function: var(--ease); }
+::view-transition-old(*), ::view-transition-new(*) { animation-duration: var(--slow); animation-timing-function: var(--ease); }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: 200ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tile, .theme-toggle, .icon-button, .filmstrip video, .player-status { transition: none; }
+  .tile[role='button']:active, .theme-toggle:active, .icon-button:active,
+  .filmstrip .tile:hover video.is-ready, .filmstrip .tile:focus-visible video.is-ready { transform: none; }
+}

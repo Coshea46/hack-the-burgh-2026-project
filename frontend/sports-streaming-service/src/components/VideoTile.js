@@ -5,7 +5,11 @@ import { boundedTime } from './MainPlayer';
 export default function VideoTile({ feed, onClick, paused = false, hidden = false, clock }) {
   const ref = useRef(null);
   const [failed, setFailed] = useState(false);
+  const [ready, setReady] = useState(false);
   const source = getPreviewUrl(feed);
+
+  // Fade the preview in once it has a frame; reset only when the URL changes.
+  useEffect(() => { setReady(ref.current.readyState >= 2); }, [source]);
 
   useEffect(() => {
     const video = ref.current;
@@ -40,13 +44,15 @@ export default function VideoTile({ feed, onClick, paused = false, hidden = fals
 
   return (
     <div className="tile" hidden={hidden} role="button" tabIndex={hidden ? -1 : 0}
+      style={{ viewTransitionName: `tile-${feed.id}` }}
       aria-label={feed.label} data-feed-id={feed.id} onClick={onClick}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onClick?.(); }
       }}>
       <div className="tile__media">
         <video ref={ref} aria-hidden="true" tabIndex={-1} src={source} loop playsInline
-          preload="metadata" muted onError={() => setFailed(true)} />
+          preload="metadata" muted className={ready ? 'is-ready' : undefined}
+          onLoadedData={() => setReady(true)} onError={() => setFailed(true)} />
         {failed && <span className="preview-status">Preview unavailable</span>}
       </div>
       <span className="tile__label">{feed.label}</span>
