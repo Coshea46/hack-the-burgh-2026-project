@@ -1,0 +1,89 @@
+{
+  "version": "matchpulse-numerical-runtime-compatibility-v1",
+  "cohort_sha256": "5742feee45e28c5179387338a55100417bec2fcf32b152fe12fe783a9e4de680",
+  "reference_proof": "audit/linux-numerical-reference.json",
+  "reference_proof_sha256": "8a6dada36077a5a771404ad185b9fb59e02d926b8f87f06f1689558dde0ee2a4",
+  "reference_environment": {
+    "numpy": "2.1.3",
+    "python": "3.13.3",
+    "system": "Linux",
+    "machine": "x86_64",
+    "processor": "",
+    "numpy_runtime": "[{'numpy_version': '2.1.3',\n  'python': '3.13.3 (main, May 21 2025, 23:35:07) [GCC 12.2.0]',\n  'uname': uname_result(system='Linux', node='modal', release='4.19.0-gvisor', version='#1 SMP Sun Jan 10 15:06:54 PST 2016', machine='x86_64')},\n {'simd_extensions': {'baseline': ['SSE', 'SSE2', 'SSE3'],\n                      'found': ['SSSE3',\n                                'SSE41',\n                                'POPCNT',\n                                'SSE42',\n                                'AVX',\n                                'F16C',\n                                'FMA3',\n                                'AVX2'],\n                      'not_found': ['AVX512F',\n                                    'AVX512CD',\n                                    'AVX512_KNL',\n                                    'AVX512_KNM',\n                                    'AVX512_SKX',\n                                    'AVX512_CLX',\n                                    'AVX512_CNL',\n                                    'AVX512_ICL']}},\n {'architecture': 'Haswell',\n  'filepath': '/usr/local/lib/python3.13/site-packages/scipy.libs/libscipy_openblas-5f890258.so',\n  'internal_api': 'openblas',\n  'num_threads': 2,\n  'prefix': 'libscipy_openblas',\n  'threading_layer': 'pthreads',\n  'user_api': 'blas',\n  'version': '0.3.31.dev'},\n {'filepath': '/usr/local/lib/python3.13/site-packages/scikit_learn.libs/libgomp-e985bcbb.so.1.0.0',\n  'internal_api': 'openmp',\n  'num_threads': 2,\n  'prefix': 'libgomp',\n  'user_api': 'openmp',\n  'version': None},\n {'filepath': '/usr/local/lib/python3.13/site-packages/torch/lib/libgomp.so.1',\n  'internal_api': 'openmp',\n  'num_threads': 2,\n  'prefix': 'libgomp',\n  'user_api': 'openmp',\n  'version': None},\n {'architecture': 'Haswell',\n  'filepath': '/usr/local/lib/python3.13/site-packages/numpy.libs/libscipy_openblas64_-ff651d7f.so',\n  'internal_api': 'openblas',\n  'num_threads': 2,\n  'prefix': 'libscipy_openblas',\n  'threading_layer': 'pthreads',\n  'user_api': 'blas',\n  'version': '0.3.27'},\n {'architecture': 'Zen',\n  'filepath': '/usr/local/lib/python3.13/site-packages/opencv_python.libs/libopenblasp-r0-59ffcd50.3.15.so',\n  'internal_api': 'openblas',\n  'num_threads': 2,\n  'prefix': 'libopenblas',\n  'threading_layer': 'pthreads',\n  'user_api': 'blas',\n  'version': '0.3.15'}]\n",
+    "thread_pools": [
+      {
+        "user_api": "blas",
+        "internal_api": "openblas",
+        "num_threads": 2,
+        "prefix": "libscipy_openblas",
+        "filepath": "/usr/local/lib/python3.13/site-packages/scipy.libs/libscipy_openblas-5f890258.so",
+        "version": "0.3.31.dev",
+        "threading_layer": "pthreads",
+        "architecture": "Haswell"
+      },
+      {
+        "user_api": "openmp",
+        "internal_api": "openmp",
+        "num_threads": 2,
+        "prefix": "libgomp",
+        "filepath": "/usr/local/lib/python3.13/site-packages/scikit_learn.libs/libgomp-e985bcbb.so.1.0.0",
+        "version": null
+      },
+      {
+        "user_api": "openmp",
+        "internal_api": "openmp",
+        "num_threads": 2,
+        "prefix": "libgomp",
+        "filepath": "/usr/local/lib/python3.13/site-packages/torch/lib/libgomp.so.1",
+        "version": null
+      },
+      {
+        "user_api": "blas",
+        "internal_api": "openblas",
+        "num_threads": 2,
+        "prefix": "libscipy_openblas",
+        "filepath": "/usr/local/lib/python3.13/site-packages/numpy.libs/libscipy_openblas64_-ff651d7f.so",
+        "version": "0.3.27",
+        "threading_layer": "pthreads",
+        "architecture": "Haswell"
+      },
+      {
+        "user_api": "blas",
+        "internal_api": "openblas",
+        "num_threads": 2,
+        "prefix": "libopenblas",
+        "filepath": "/usr/local/lib/python3.13/site-packages/opencv_python.libs/libopenblasp-r0-59ffcd50.3.15.so",
+        "version": "0.3.15",
+        "threading_layer": "pthreads",
+        "architecture": "Zen"
+      }
+    ]
+  },
+  "selected_core_models_in_reference": {},
+  "selected_directories_outside_seven_core_model_proof": [
+    "temporal-run-v2"
+  ],
+  "representation_source_sha256": "b7f4800c08cb68d39433d200ab26bfd13927ecae96ddb274c54048b57777a73c",
+  "tabular_source_sha256": "74a3cc3680c7214baeb4cc8151a5add83df399406cf50d033e3b0bd2cc694e8d",
+  "coverage": {
+    "match_halves": 30,
+    "models": 7,
+    "first_original_eligible_and_first_fixed_grid_only": true,
+    "original_eligible_scores": 210,
+    "fixed_grid_scores": 210,
+    "raw_vs_cache_routes": 420,
+    "all_raw_windows_checked": false,
+    "all_hgb_paths_identical_for_checked_cases": true
+  },
+  "score_gate": {
+    "atol": 1e-10,
+    "rtol": 0,
+    "allowed_HGB_branch_differences": 0
+  },
+  "descriptors_bitwise_identical_required": false,
+  "windows_failed_proof": "audit/windows-raw-builder-failed-proof.json",
+  "supported_reference_statement": "Canonical raw-tabular reference: Linux x86_64, Python3.13.3, NumPy2.1.3 with the recorded AVX2/OpenBLAS runtime. Checked30 first real observations per each of7 core models through both source-cache routes. This does not establish bitwise descriptor identity or score parity on every platform/window.",
+  "windows_statement": "Windows NumPy2.1.3 alone did not resolve the original cross-platform raw-builder failures. The selected package still must pass its separate fresh Windows real-window smoke; no universal Windows raw-builder equivalence is claimed.",
+  "other_families_statement": "This seven-core-model reference is not a Linux proof of audio/PCA/history/temporal or additional model weights. The selected model/composition has a separate published-score smoke and explicit builder identities.",
+  "test_accessed": false
+}

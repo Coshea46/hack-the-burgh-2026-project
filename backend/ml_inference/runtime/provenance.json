@@ -1,0 +1,22 @@
+{
+  "research_distribution": "matchpulse",
+  "research_version": "0.1.0+autonomous1",
+  "wheel_filename": "matchpulse-0.1.0+autonomous1-py3-none-any.whl",
+  "wheel_sha256": "3040593a8c23338d17a2d54ac5b76eed6be7df1ed6074386207f5a6010343291",
+  "feature_schema_version": "matchpulse-215-v1",
+  "yolo_filename": "yolo26s.pt",
+  "yolo_sha256": "646f8bc3fe0a656803d95c294f7852321748cb29d13466a1af8862e2db384a1b",
+  "source": "Read-only autonomous-v1/delivery-v1 release; copied verified wheel without executing a research build or controller",
+  "detector": {
+    "image_size": 640,
+    "batch_size": 16,
+    "confidence": 0.15,
+    "ball_confidence": 0.08,
+    "person_class": 0,
+    "ball_class": 32
+  },
+  "selected_model_version": "temporal-shots3_10-d63fff64480d/classifier.pt",
+  "selected_head": "shots3_10",
+  "selected_checkpoint_sha256": "d63fff64480d00835c14bc7c726e062b00278126d517e1e9eceb1abe0aafbd1e",
+  "rollback_model_version": "gru-stage1-02de8309/classifier.pt"
+}

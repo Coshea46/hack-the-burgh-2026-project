@@ -1,0 +1,6 @@
+# Isolated ElevenLabs realtime worker and optional offline CLI.
+# Keep this environment separate from the inference backend's websockets version.
+elevenlabs==2.77.0
+websockets==13.1
+av==17.1.0
+numpy==2.1.3

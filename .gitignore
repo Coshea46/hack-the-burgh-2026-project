@@ -1,3 +1,8 @@
 .idea
 .env
 frontend/sports-streaming-service/node_modules
+__pycache__/
+.pytest_cache/
+.venv*/
+artifacts/
+frontend/sports-streaming-service/build/
