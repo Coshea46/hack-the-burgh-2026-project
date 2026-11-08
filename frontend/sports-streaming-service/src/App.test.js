@@ -20,10 +20,12 @@ test('opens one S3 main player and six visible lightweight previews', () => {
   const strip = screen.getByRole('region', { name: 'Other matches' });
   expect(within(strip).getAllByRole('button')).toHaveLength(6);
   expect(strip.querySelectorAll('video')).toHaveLength(7);
-  strip.querySelectorAll('video').forEach((video) => {
-    expect(video).toHaveAttribute('src', getPreviewUrl(FEEDS[0]));
-    expect(video.getAttribute('src')).not.toBe(main.getAttribute('src'));
+  strip.querySelectorAll('video').forEach((video, i) => {
+    expect(video).toHaveAttribute('src', getPreviewUrl(FEEDS[i]));
+    expect(video.getAttribute('src')).not.toBe(getVideoUrl(FEEDS[i]));
   });
+  expect(getVideoUrl(FEEDS[0])).toMatch(/\/match-1\.mp4$/);
+  expect(getPreviewUrl(FEEDS[6])).toMatch(/\/match-7-preview-v1\.mp4$/);
 });
 
 test('switching preserves every video DOM node and the shared-source main timestamp', () => {
@@ -117,13 +119,16 @@ test('themes persist without replacing media elements', () => {
   expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
 });
 
-test('main failures expose retry and preview errors never load the full source', () => {
+test('main failures expose retry; a missing preview falls back to the full video once', () => {
   const { container } = render(<App />);
   fireEvent.error(screen.getByLabelText('Match 1 video'));
   expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   const preview = container.querySelector('[data-feed-id="2"] video');
-  fireEvent.error(preview);
   expect(preview).toHaveAttribute('src', getPreviewUrl(FEEDS[1]));
+  fireEvent.error(preview);
+  expect(preview).toHaveAttribute('src', getVideoUrl(FEEDS[1]));
+  expect(screen.queryByText('Preview unavailable')).not.toBeInTheDocument();
+  fireEvent.error(preview);
   expect(screen.getByText('Preview unavailable')).toBeInTheDocument();
 });
 
