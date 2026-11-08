@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { getVideoUrl, sourceOffset } from '../feeds';
+import { SOURCE_LOAD_EVENT, SOURCE_READY_EVENT } from '../useSourcePlayback';
 
 export function boundedTime(time, duration) {
   const safe = Number.isFinite(time) ? Math.max(0, time) : 0;
@@ -7,9 +8,10 @@ export function boundedTime(time, duration) {
 }
 
 // The DOM element survives every selection. Only a genuinely different URL loads.
-export default function MainPlayer({ feed, clock, seekTo, onPlayback, onAvailability, inferenceBuffering = false }) {
+export default function MainPlayer({ feed, clock, seekTo, onPlayback, onAvailability, mediaRef, inferenceBuffering = false }) {
   const ref = useRef(null);
   const appliedSeek = useRef(null);
+  const appliedRetry = useRef(0);
   const source = getVideoUrl(feed);
   const offset = sourceOffset(feed);
   const callbacks = useRef({ onPlayback, onAvailability });
@@ -21,12 +23,25 @@ export default function MainPlayer({ feed, clock, seekTo, onPlayback, onAvailabi
   const [error, setError] = useState(false);
   const [retry, setRetry] = useState(0);
 
+  useLayoutEffect(() => {
+    if (!mediaRef) return undefined;
+    const video = ref.current;
+    if (!('matchpulseReadySource' in video)) video.matchpulseReadySource = null;
+    mediaRef.current = video;
+    return () => { if (mediaRef.current === video) mediaRef.current = null; };
+  }, [mediaRef]);
+
   useEffect(() => {
     const video = ref.current;
     const replayClock = clock.current;
     let cancelled = false;
     let preparing = true;
     let failed = false;
+    const retryRequested = retry !== appliedRetry.current;
+    appliedRetry.current = retry;
+    const resourceChanged = video.getAttribute('src') !== source;
+    video.matchpulseReadySource = null;
+    if (resourceChanged || retryRequested) video.dispatchEvent(new Event(SOURCE_LOAD_EVENT));
     const target = { ...clock.current };
     clock.current.stalled = true;
     clock.current.ended = false;
@@ -46,6 +61,7 @@ export default function MainPlayer({ feed, clock, seekTo, onPlayback, onAvailabi
     const fail = () => {
       if (cancelled) return;
       failed = true;
+      video.matchpulseReadySource = null;
       clock.current.stalled = true;
       clock.current.available = false;
       setError(true);
@@ -60,6 +76,8 @@ export default function MainPlayer({ feed, clock, seekTo, onPlayback, onAvailabi
       clock.current.available = true;
       setLoading(false);
       remember();
+      video.matchpulseReadySource = `${source}\n${feed.cameraId}`;
+      video.dispatchEvent(new Event(SOURCE_READY_EVENT));
       callbacks.current.onAvailability?.(feed.cameraId, true);
       callbacks.current.onPlayback?.();
       if ((target.playing || resumeAfterBuffer.current) && !buffering.current) {
@@ -118,8 +136,8 @@ export default function MainPlayer({ feed, clock, seekTo, onPlayback, onAvailabi
     Object.entries(listeners).forEach(([event, handler]) => video.addEventListener(event, handler));
     // Set src imperatively after saving the old timeline, rather than letting a
     // React src mutation reset currentTime before the handoff can capture it.
-    if (video.getAttribute('src') !== source) video.src = source;
-    else if (retry) video.load();
+    if (resourceChanged) video.src = source;
+    else if (retryRequested) video.load();
     else if (video.readyState >= 1) metadata();
 
     return () => {

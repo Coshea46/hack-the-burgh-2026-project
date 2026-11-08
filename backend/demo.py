@@ -9,6 +9,7 @@ import os
 import time
 from pathlib import Path
 
+from backend.local_config import load_local_environment
 from backend.main import AppController
 from backend.ml_inference.overhaul_cloud import environment
 from backend.ml_inference.replay_contract import MATCHES_PER_GPU, MAX_WORKER_RATE
@@ -81,14 +82,17 @@ def configuration(matches, seconds, offline):
 
 
 async def serve(args):
+    load_local_environment()
     registry, config, allowance = configuration(args.matches, args.seconds, args.offline)
     if not args.offline:
         os.environ.update(environment())
     os.environ["MATCHPULSE_ALLOWED_ORIGINS"] = (
         f"http://localhost:{args.frontend_port},http://127.0.0.1:{args.frontend_port}")
+    os.environ["MATCHPULSE_API_ALLOWED_ORIGINS"] = os.environ["MATCHPULSE_ALLOWED_ORIGINS"]
     budget = None if args.offline else DemoBudget()
     reservation = None if budget is None else budget.reserve(allowance)
-    controller = AppController(registry=registry, config=config, host="127.0.0.1", port=args.port)
+    controller = AppController(registry=registry, config=config, host="127.0.0.1", port=args.port,
+                               api_port=args.api_port)
     session = controller.session
     before = time.perf_counter()
     server = asyncio.create_task(controller.start())
@@ -138,13 +142,14 @@ def main():
     parser.add_argument("--seconds", type=int, choices=range(30, 181), default=120)
     parser.add_argument("--port", type=int, default=8030)
     parser.add_argument("--frontend-port", type=int, default=3030)
+    parser.add_argument("--api-port", type=int, default=8031)
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--allow-cloud", action="store_true", help="Use the installed real GRU")
     modes.add_argument("--offline", action="store_true", help="Play sources without GPU monitoring")
     args = parser.parse_args()
-    if not (1024 <= args.port <= 65535 and 1024 <= args.frontend_port <= 65535
-            and args.port != args.frontend_port):
-        parser.error("Choose distinct backend/frontend ports between 1024 and 65535")
+    if not (all(1024 <= port <= 65535 for port in (args.port, args.frontend_port, args.api_port))
+            and len({args.port, args.frontend_port, args.api_port}) == 3):
+        parser.error("Choose distinct backend/frontend/API ports between 1024 and 65535")
     logging.basicConfig(level=logging.WARNING)
     asyncio.run(serve(args))
 

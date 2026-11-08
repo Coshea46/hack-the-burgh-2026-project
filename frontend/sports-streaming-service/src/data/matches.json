@@ -1,0 +1,278 @@
+{
+  "schema_version": 1,
+  "matches": [
+    {
+      "match_id": "cam-1",
+      "home_team": "Chelsea",
+      "away_team": "Swansea City",
+      "display_name": "Chelsea vs Swansea City",
+      "source_key": "match-1.mp4",
+      "preview_key": "match-1-preview-v1.mp4",
+      "verification": {
+        "identity": "footage_verified",
+        "notes": "Fixture abbreviations and source association inspected in the encoded source at 120 and 600 seconds.",
+        "evidence_source_seconds": [
+          120,
+          600
+        ]
+      },
+      "replay": {
+        "kind": "prerecorded",
+        "score_intervals": [
+          {
+            "start_seconds": 120,
+            "end_seconds": 600,
+            "home": 0,
+            "away": 0,
+            "verified": true,
+            "evidence": "Source scoreboard 0–0 at 120 and 600 seconds; bounded opening replay interval."
+          }
+        ],
+        "score_note": "Historical replay metadata. No score is asserted outside the inspected source interval."
+      },
+      "source_identity": {
+        "source_key": "match-1.mp4",
+        "etag": "fb4beb6f484a688475a4fab544ee1189-67",
+        "content_length": 1144318439,
+        "locator_sha256": "054c609df9a9dd94e07d70d76579c7382aed498e3baae257f6b459c04db7209f",
+        "digest": "08f4893d4c8f9353d4f97bdf4b664fdb9f41c3ec9bea5de80f9f788c4ba284bc"
+      }
+    },
+    {
+      "match_id": "cam-2",
+      "home_team": "Manchester City",
+      "away_team": "Chelsea",
+      "display_name": "Manchester City vs Chelsea",
+      "source_key": "match-2.mp4",
+      "preview_key": "match-2-preview-v1.mp4",
+      "verification": {
+        "identity": "footage_verified",
+        "notes": "Fixture abbreviations and source association inspected in the encoded source at 120 and 600 seconds.",
+        "evidence_source_seconds": [
+          120,
+          600
+        ]
+      },
+      "replay": {
+        "kind": "prerecorded",
+        "score_intervals": [
+          {
+            "start_seconds": 120,
+            "end_seconds": 600,
+            "home": 0,
+            "away": 0,
+            "verified": true,
+            "evidence": "Source scoreboard 0–0 at 120 and 600 seconds; bounded opening replay interval."
+          }
+        ],
+        "score_note": "Historical replay metadata. No score is asserted outside the inspected source interval."
+      },
+      "source_identity": {
+        "source_key": "match-2.mp4",
+        "etag": "2fe86338d284520c43e037558c09338d-66",
+        "content_length": 1132152378,
+        "locator_sha256": "19515b520e640b861cf96748939e78f23948d5b65a0c9324a585a7e474207896",
+        "digest": "dc0ec919724ed8d155ede710afceb0fe06f24f27506339f48b45c9ec232ed1e1"
+      }
+    },
+    {
+      "match_id": "cam-3",
+      "home_team": "West Bromwich Albion",
+      "away_team": "Chelsea",
+      "display_name": "West Bromwich Albion vs Chelsea",
+      "source_key": "match-3.mp4",
+      "preview_key": "match-3-preview-v1.mp4",
+      "verification": {
+        "identity": "footage_verified",
+        "notes": "Fixture abbreviations and source association inspected in the encoded source at 120 and 600 seconds.",
+        "evidence_source_seconds": [
+          120,
+          600
+        ]
+      },
+      "replay": {
+        "kind": "prerecorded",
+        "score_intervals": [
+          {
+            "start_seconds": 120,
+            "end_seconds": 600,
+            "home": 0,
+            "away": 0,
+            "verified": true,
+            "evidence": "Source scoreboard 0–0 at 120 and 600 seconds; bounded opening replay interval."
+          }
+        ],
+        "score_note": "Historical replay metadata. No score is asserted outside the inspected source interval."
+      },
+      "source_identity": {
+        "source_key": "match-3.mp4",
+        "etag": "c661008dc14399ad306f6f094b6ce477-58",
+        "content_length": 993320846,
+        "locator_sha256": "e1626161ceaf0c8a06dfdabdf11270fb6c11ea51b7a294b9749177a1c64cad60",
+        "digest": "0e4818ce984e3c93384c4a5a27ed7f6fbb07d4f20931935f7c6827fe1a5591fa"
+      }
+    },
+    {
+      "match_id": "cam-4",
+      "home_team": "Chelsea",
+      "away_team": "Crystal Palace",
+      "display_name": "Chelsea vs Crystal Palace",
+      "source_key": "match-4.mp4",
+      "preview_key": "match-4-preview-v1.mp4",
+      "verification": {
+        "identity": "footage_verified",
+        "notes": "Fixture abbreviations and source association inspected in the encoded source at 120 and 600 seconds.",
+        "evidence_source_seconds": [
+          120,
+          600
+        ]
+      },
+      "replay": {
+        "kind": "prerecorded",
+        "score_intervals": [
+          {
+            "start_seconds": 120,
+            "end_seconds": 600,
+            "home": 0,
+            "away": 0,
+            "verified": true,
+            "evidence": "Source scoreboard 0–0 at 120 and 600 seconds; bounded opening replay interval."
+          }
+        ],
+        "score_note": "Historical replay metadata. No score is asserted outside the inspected source interval."
+      },
+      "source_identity": {
+        "source_key": "match-4.mp4",
+        "etag": "caffb1afe0ab825e7a00e7c7e3733453-46",
+        "content_length": 785578919,
+        "locator_sha256": "7ef3adf1127e20fc90b2c4c188610afa28f30da0276ed78f38031f31b97e51a4",
+        "digest": "957e32f430eea70c5a6754bd340d0a9ad1d0c6001ee09ea2d68bd3688a9971d7"
+      }
+    },
+    {
+      "match_id": "cam-5",
+      "home_team": "Liverpool",
+      "away_team": "West Ham United",
+      "display_name": "Liverpool vs West Ham United",
+      "source_key": "match-5.mp4",
+      "preview_key": "match-5-preview-v1.mp4",
+      "verification": {
+        "identity": "footage_verified",
+        "notes": "Fixture abbreviations and source association inspected in the encoded source at 120 and 600 seconds.",
+        "evidence_source_seconds": [
+          120,
+          600
+        ],
+        "references": [
+          "https://www.liverpoolfc.com/news/first-team/192900-reds-beaten-by-hammers-at-anfield"
+        ]
+      },
+      "replay": {
+        "kind": "prerecorded",
+        "score_intervals": [
+          {
+            "start_seconds": 120,
+            "end_seconds": 150,
+            "home": 0,
+            "away": 0,
+            "verified": true,
+            "evidence": "Source scoreboards at 120 and 150 seconds show LIV 0–0 WHU."
+          },
+          {
+            "start_seconds": 160,
+            "end_seconds": 600,
+            "home": 0,
+            "away": 1,
+            "verified": true,
+            "evidence": "Source scoreboards at 160,170,180,190,200,210,240 and600 seconds show LIV 0–1 WHU."
+          }
+        ],
+        "score_note": "The score changes between source150 and160s; that uncertain ten-second boundary is intentionally unscored."
+      },
+      "source_identity": {
+        "source_key": "match-5.mp4",
+        "etag": "53bd82d095bb40e0c6df310413f5f831-62",
+        "content_length": 1062245105,
+        "locator_sha256": "94ba16ef0d3627520f38e5e74c0857912417a1132ddbf0d25db075971a1346fa",
+        "digest": "e8b071793c3add3a1fdcd69858025d00d74e49ac02b9ebd54d82c190f39df529"
+      }
+    },
+    {
+      "match_id": "cam-6",
+      "home_team": "Manchester City",
+      "away_team": "Watford",
+      "display_name": "Manchester City vs Watford",
+      "source_key": "match-6.mp4",
+      "preview_key": "match-6-preview-v1.mp4",
+      "verification": {
+        "identity": "footage_verified",
+        "notes": "Fixture abbreviations and source association inspected in the encoded source at 120 and 600 seconds.",
+        "evidence_source_seconds": [
+          120,
+          600
+        ]
+      },
+      "replay": {
+        "kind": "prerecorded",
+        "score_intervals": [
+          {
+            "start_seconds": 120,
+            "end_seconds": 600,
+            "home": 0,
+            "away": 0,
+            "verified": true,
+            "evidence": "Source scoreboard 0–0 at 120 and 600 seconds; bounded opening replay interval."
+          }
+        ],
+        "score_note": "Historical replay metadata. No score is asserted outside the inspected source interval."
+      },
+      "source_identity": {
+        "source_key": "match-6.mp4",
+        "etag": "f485ad98dc1c4c7777ab223b19924b7a-45",
+        "content_length": 771232679,
+        "locator_sha256": "573d780ca320bd894ae152796c19c5c84f7aca50d3ad224b92b30658a6c8a1ee",
+        "digest": "c30c93d113af222916d2839772ce72d41631cc503760594f599c90f5dd0f03a5"
+      }
+    },
+    {
+      "match_id": "cam-7",
+      "home_team": "Swansea City",
+      "away_team": "Manchester United",
+      "display_name": "Swansea City vs Manchester United",
+      "source_key": "match-7.mp4",
+      "preview_key": "match-7-preview-v1.mp4",
+      "verification": {
+        "identity": "footage_verified",
+        "notes": "Source scoreboard SWA vsMU, United red kit and 2015 fixture corroborated by the official Swansea City report.",
+        "evidence_source_seconds": [
+          120,
+          600
+        ],
+        "references": [
+          "https://www.swanseacity.com/news/30082015-1500-v-manchester-united"
+        ]
+      },
+      "replay": {
+        "kind": "prerecorded",
+        "score_intervals": [
+          {
+            "start_seconds": 120,
+            "end_seconds": 600,
+            "home": 0,
+            "away": 0,
+            "verified": true,
+            "evidence": "Source scoreboard 0–0 at 120 and 600 seconds; bounded opening replay interval."
+          }
+        ],
+        "score_note": "Historical replay metadata. No score is asserted outside the inspected source interval."
+      },
+      "source_identity": {
+        "source_key": "match-7.mp4",
+        "etag": "8caddb982bbc2b94442a432f829d7e39-62",
+        "content_length": 1049113707,
+        "locator_sha256": "b434a12987ca93df74dd3b300b0839e4715ecc102c86bd243ade54d7dd197d03",
+        "digest": "9f67c8b6ad43bfc8cd700be470a2cca4098f8f35a96489cec3d07d26d07c1711"
+      }
+    }
+  ]
+}

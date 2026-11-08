@@ -1,21 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import './App.css';
+import './Platform.css';
 import { FEEDS } from './feeds';
 import VideoTile from './components/VideoTile';
-import { Activity, ArrowUpRight, Check, Moon, Pause, Play, Shuffle, Sun } from 'lucide-react';
+import { Activity, Check, Moon, Pause, Play, Sun } from 'lucide-react';
 import MainPlayer from './components/MainPlayer';
 import { withViewTransition } from './viewTransition';
 import useBackendSocket from './useBackendSocket';
 import { isUnavailableFallback, readSession, validRecommendation } from './replayProtocol';
 import { DIRECTOR_MODES, MODE_STORAGE_KEY, preferredMode, readDirector } from './director';
 import DirectorPanel from './components/DirectorPanel';
-import SessionMoments from './components/SessionMoments';
-import HowItWorks from './components/HowItWorks';
+import TablesPage from './components/TablesPage';
+import NewsPage from './components/NewsPage';
+import CommentaryCaptions from './components/CommentaryCaptions';
+import ReplayScore from './components/ReplayScore';
+import useLiveCaptions from './useLiveCaptions';
 
 // After a manual pick, ignore the backend's switches for this long.
 export const MANUAL_HOLD_MS = 30000;
 
-const CONNECTION_LABELS = { connecting: 'Connecting', connected: 'Connected', offline: 'Offline' };
+const PAGES = ['watch', 'tables', 'news'];
+const pageFromHash = () => PAGES.includes(window.location.hash.slice(1).toLowerCase()) ? window.location.hash.slice(1).toLowerCase() : 'watch';
 
 function App() {
   const [feeds, setFeeds] = useState(FEEDS);
@@ -24,7 +29,7 @@ function App() {
   const [director, setDirector] = useState(null);
   const [pendingMode, setPendingMode] = useState(null);
   const [modeNotice, setModeNotice] = useState('');
-  const [activePage, setActivePage] = useState('watch');
+  const [activePage, setActivePage] = useState(pageFromHash);
   const [selectionKind, setSelectionKind] = useState('initial');
   const [uiNow, setUiNow] = useState(Date.now());
   const [focusedId, setFocusedId] = useState(FEEDS[0].id);
@@ -34,8 +39,8 @@ function App() {
   const [seekTo, setSeekTo] = useState(null);
   const [announcement, setAnnouncement] = useState('');
   const [theme, setTheme] = useState(() => {
-    try { return localStorage.getItem('match-switcher-theme') === 'light' ? 'light' : 'dark'; }
-    catch { return 'dark'; }
+    try { return localStorage.getItem('match-switcher-theme') === 'dark' ? 'dark' : 'light'; }
+    catch { return 'light'; }
   });
   const clock = useRef({ time: 0, playing: true, rate: 1, muted: false, volume: 1, stalled: true, available: true });
   const send = useRef(() => false);
@@ -52,6 +57,7 @@ function App() {
   const pendingAck = useRef(null);
   const directorRef = useRef(null);
   const headingRef = useRef(null);
+  const mainVideo = useRef(null);
   const previousId = useRef(focusedId);
   const switchSource = useRef('user');
   const synced = useRef(false);
@@ -59,24 +65,30 @@ function App() {
   const pendingModeRef = useRef(null);
   const modeRequestSession = useRef(null);
   const serverSkew = useRef(0);
+  const navigation = useRef(0);
   const focused = feeds.find((feed) => feed.id === focusedId) || feeds[0];
   feedsRef.current = feeds;
   focusedRef.current = focused.id;
   autoRef.current = autoSwitch;
   holdRef.current = holdUntil;
+  const captions = useLiveCaptions({ session, feeds: feedsRef, focused: focusedRef, clock, media: mainVideo, send });
+  const captionPlayback = captions.onPlayback;
+  const captionConnection = captions.onConnection;
 
   const reportPlayback = useCallback(() => {
     clock.current.sample?.();
     const current = session.current;
     const feed = feedsRef.current.find((item) => item.id === focusedRef.current);
-    if (!current || current.controls_enabled === false || !feed) return;
+    if (!current || !feed) return;
+    captionPlayback();
+    if (current.controls_enabled === false) return;
     send.current({
       type: 'playback', session_id: current.session_id, match_id: feed.cameraId,
       position: clock.current.time, playing: clock.current.playing, rate: clock.current.rate,
       stalled: Boolean(clock.current.stalled), available: clock.current.available !== false,
       ended: Boolean(clock.current.ended),
     });
-  }, []);
+  }, [captionPlayback]);
 
   useEffect(() => {
     const timer = setInterval(reportPlayback, 250);
@@ -180,7 +192,7 @@ function App() {
     try { localStorage.setItem('match-switcher-theme', theme); } catch {}
     document.documentElement.dataset.theme = theme;
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.content = theme === 'dark' ? '#081122' : '#f4f7fc';
+    if (meta) meta.content = theme === 'dark' ? '#111b2e' : '#eef2f9';
   }, [theme]);
 
   useEffect(() => {
@@ -262,6 +274,7 @@ function App() {
         if (previous?.url !== feed.url) unavailable.current.delete(feed.cameraId);
       });
       session.current = next;
+      captions.onSession(next);
       if (pendingAck.current && !next.feeds.some((feed) => feed.cameraId === pendingAck.current.selected_match_id && feed.healthy)) {
         pendingAck.current = null;
       }
@@ -305,6 +318,9 @@ function App() {
         setHoldUntil(holdRef.current);
       }
       reportPlayback();
+    } else if (message.type === 'caption') {
+      clock.current.sample?.();
+      if (captions.onMessage(message)) session.current = { ...session.current, sequence: message.sequence };
     } else if (message.type === 'recommendation') {
       clock.current.sample?.();
       // Scores can arrive while the newly selected source is buffering. Consume
@@ -335,7 +351,8 @@ function App() {
 
   useEffect(() => {
     if (connection !== 'connected') modeRequestSession.current = null;
-  }, [connection]);
+    captionConnection(connection === 'connected');
+  }, [connection, captionConnection]);
 
   const toggleAuto = () => {
     const enabled = !autoRef.current;
@@ -381,32 +398,39 @@ function App() {
     && (!Number.isFinite(director.scores_valid_until) || director.scores_valid_until > now));
   const scores = scoreFresh ? Object.fromEntries(Object.entries(director.latest_scores)
     .filter(([id]) => feeds.some((feed) => feed.cameraId === id && feed.healthy !== false))) : {};
-  const navigate = (page) => withViewTransition(() => setActivePage(page));
+  const navigate = useCallback((page, pushHistory = true) => {
+    const next = PAGES.includes(page) ? page : 'watch';
+    const request = ++navigation.current;
+    if (pushHistory && window.location.hash !== `#${next}`) window.history.pushState(null, '', `#${next}`);
+    withViewTransition(() => { if (request === navigation.current) setActivePage(next); });
+  }, []);
+
+  useEffect(() => {
+    const normalize = () => {
+      const page = pageFromHash();
+      if (window.location.hash && window.location.hash !== `#${page}`) window.history.replaceState(null, '', `#${page}`);
+      return page;
+    };
+    normalize();
+    const onRoute = () => navigate(normalize(), false);
+    window.addEventListener('hashchange', onRoute);
+    window.addEventListener('popstate', onRoute);
+    return () => { window.removeEventListener('hashchange', onRoute); window.removeEventListener('popstate', onRoute); };
+  }, [navigate]);
 
   return (
     <div className="app" data-theme={theme}>
-      <a className="skip-link" href="#matches">Skip to player</a>
+      <a className="skip-link" href="#matches" onClick={(event) => { event.preventDefault(); document.getElementById('matches')?.focus(); }}>Skip to content</a>
       <header className="app-header">
         <a className="brand" href="#watch" onClick={(event) => { event.preventDefault(); navigate('watch'); }} aria-label="MatchPulse home">
-          <span className="brand-mark"><Activity size={23} aria-hidden="true" /></span>Match<span className="brand-accent">Pulse</span>
+          <span className="brand-mark"><Activity size={29} aria-hidden="true" /></span><span>MatchPulse</span>
         </a>
         <nav className="main-nav" aria-label="Main navigation">
-          {[['watch', 'Watch'], ['moments', 'Moments'], ['how', 'How it works']].map(([id, label]) =>
+          {[['watch', 'Watch'], ['tables', 'Tables'], ['news', 'News']].map(([id, label]) =>
             <a key={id} href={`#${id}`} aria-current={activePage === id ? 'page' : undefined}
               onClick={(event) => { event.preventDefault(); navigate(id); }}>{label}</a>)}
         </nav>
         <div className="header-actions">
-          {connection !== 'disabled' && (
-            <span className={`connection connection--${connection}`} role="status" title={`Backend: ${CONNECTION_LABELS[connection]}`}>
-              <span className="connection__dot" aria-hidden="true" />
-              <span className="connection__label">{CONNECTION_LABELS[connection]}</span>
-            </span>
-          )}
-          <button className="director-toggle" aria-label={autoLabel} aria-pressed={autoSwitch} title={autoTitle}
-            onClick={toggleAuto}>
-            <Shuffle size={18} aria-hidden="true" />
-            <span>Auto Director</span><span className={`toggle-track ${autoSwitch ? 'is-on' : ''}`} aria-hidden="true"><i /></span>
-          </button>
           <button className="theme-toggle icon-button" onClick={() => withViewTransition(() => setTheme(theme === 'dark' ? 'light' : 'dark'))}
             aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
             {theme === 'dark' ? <Sun size={20} aria-hidden="true" /> : <Moon size={20} aria-hidden="true" />}
@@ -415,37 +439,30 @@ function App() {
       </header>
       <main id="matches" className="app-content" tabIndex={-1} onKeyDown={onPlayerKey}>
         <section id="watch" className="player-layout" hidden={activePage !== 'watch'} aria-label="Watch matches">
-          <div className="watch-intro"><div><p className="eyebrow">YOUR MATCHDAY, REIMAGINED</p>
-            <p className="hero-title">All the action. <span>In focus.</span></p>
-            <p className="hero-description">Your matches, together. Your director, at your pace.</p></div>
-            <div className="session-badges"><span className="replay-badge"><span /> Prerecorded replay</span>
-              <span className="inference-mode" role="status">{inferenceLabel}</span></div>
-          </div>
-          <div className="watch-stage"><div className="player-column">
-            <div className="player-heading"><div><p className="eyebrow">NOW WATCHING <span>{focused.cameraId}</span></p>
-              <h1 ref={headingRef} tabIndex={-1} style={{ viewTransitionName: 'match-heading' }}>{focused.label}</h1></div>
+            <div className="player-heading"><div className="fixture-heading">
+              <h1 ref={headingRef} tabIndex={-1} style={{ viewTransitionName: 'match-heading' }}>{focused.label}</h1><ReplayScore feed={focused} mediaRef={mainVideo} /></div>
+              <div className="match-context"><span className="replay-badge">Prerecorded replay</span>
               <span className={`selection-pill ${selectionKind === 'automatic' ? 'is-automatic' : ''}`}>
                 {selectionKind === 'automatic' ? <><Activity size={14} aria-hidden="true" /> MatchPulse selected</>
-                  : selectionKind === 'manual' ? <><Check size={14} aria-hidden="true" /> Your selection</> : 'Focused match'}</span>
+                  : selectionKind === 'manual' ? <><Check size={14} aria-hidden="true" /> Your selection</> : 'Watching'}</span></div>
             </div>
-            <MainPlayer feed={focused} clock={clock} seekTo={seekTo} onPlayback={reportPlayback}
+          <DirectorPanel director={director} mode={mode} pendingMode={pendingMode} notice={modeNotice} onMode={requestMode}
+            enabled={autoSwitch} held={held} holdUntil={holdUntil} now={now} monitoring={monitoring} matchCount={feeds.length}
+            monitoredCount={feeds.filter((feed) => feed.healthy !== false).length} starting={inferenceBuffering}
+            connected={connection === 'connected'} connection={connection} canControl={sessionState?.controls_enabled !== false}
+            scoreFresh={scoreFresh} inferenceLabel={inferenceLabel} autoLabel={autoLabel} autoTitle={autoTitle} onToggle={toggleAuto} />
+          <div className="watch-stage"><div className="player-column">
+            <MainPlayer feed={focused} clock={clock} seekTo={seekTo} onPlayback={reportPlayback} mediaRef={mainVideo}
           inferenceBuffering={inferenceBuffering}
           onAvailability={(matchId, available) => {
             if (available) { unavailable.current.delete(matchId); finishRecommendation(); }
             else { unavailable.current.add(matchId); pendingAck.current = null; }
           }} />
-            <div className="player-context"><span><span className="status-dot" />{autoSwitch ? held ? 'Your pick · Auto resumes after the hold' : `Auto Director · ${DIRECTOR_MODES[mode].label}` : 'Manual mode · you choose the match'}</span>
-              <span>{scoreFresh && Number.isFinite(scores[focused.cameraId]) ? `Relative ${sessionState?.mode === 'features_mock' ? 'mock' : 'model'} score ${scores[focused.cameraId].toFixed(3)}` : 'Enjoy the match'}</span>
-            </div>
+            <CommentaryCaptions feed={focused} mediaRef={mainVideo} live={captions.value} enabled={captions.enabled}
+              onToggle={captions.control} connected={connection === 'connected'} canControl={sessionState?.controls_enabled !== false} />
           </div>
-          <DirectorPanel director={director} mode={mode} pendingMode={pendingMode} notice={modeNotice} onMode={requestMode}
-            enabled={autoSwitch} held={held} holdUntil={holdUntil} now={now} monitoring={monitoring} matchCount={feeds.length}
-            monitoredCount={feeds.filter((feed) => feed.healthy !== false).length} starting={inferenceBuffering}
-            connected={connection === 'connected'} canControl={sessionState?.controls_enabled !== false} scoreFresh={scoreFresh} />
-          </div>
-        <div className="strip-toolbar"><div>
-          <p className="eyebrow">THE REST OF YOUR MATCHDAY</p><h2>Other matches <span>{Math.max(0, feeds.length - 1)}</span></h2>
-          <p>Pick a match. We’ll stay with your choice for 30 seconds.</p></div>
+          <aside className="alternatives" aria-label="Match selection">
+        <div className="strip-toolbar"><h2>Other matches <span>{Math.max(0, feeds.length - 1)}</span></h2>
           <button className="icon-button" aria-label={previewsPaused ? 'Resume previews' : 'Pause previews'}
             title={previewsPaused ? 'Resume previews' : 'Pause previews'} aria-pressed={previewsPaused}
             onClick={() => setPreviewsPaused(!previewsPaused)}>
@@ -460,16 +477,13 @@ function App() {
               monitoring={monitoring} />
           ))}
         </div>
-        {feeds.length === 1 && <p className="section-note">This replay has one registered match. More matches will appear when they are available.</p>}
-        <p className="section-note">{sessionState ? `${feeds.length} distinct ${feeds.length === 1 ? 'source' : 'sources'} registered for this replay.` : 'Previewing available sources. Connect to a replay for confirmed registrations.'}
-          {' '}Scores are relative and experimental, not goal probabilities.</p>
+        <p className="selection-help">{feeds.length === 1 ? 'No other matches in this replay.' : 'Choose a match to keep it for 30 seconds.'}</p>
+          </aside></div>
+        <p className="watch-disclosure">Replay footage. Scores are relative and experimental, not goal probabilities.</p>
         </section>
-        <div id="moments" hidden={activePage !== 'moments'}><SessionMoments director={director} feeds={feeds} now={now}
-          sessionId={sessionState?.session_id} onWatch={() => navigate('watch')} /></div>
-        <div id="how" hidden={activePage !== 'how'}><HowItWorks onWatch={() => navigate('watch')} /></div>
-        {activePage !== 'watch' && <button className="return-to-watch" onClick={() => navigate('watch')}><Play size={15} aria-hidden="true" /> Return to {focused.label} <ArrowUpRight size={15} aria-hidden="true" /></button>}
+        <div id="tables" hidden={activePage !== 'tables'}><TablesPage active={activePage === 'tables'} /></div>
+        <div id="news" hidden={activePage !== 'news'}><NewsPage active={activePage === 'news'} /></div>
       </main>
-      <footer className="app-footer"><span>MatchPulse <span>·</span> Football, in focus.</span><span>Experimental director. You’re always in control.</span></footer>
       <div className={`selection-toast ${announcement ? 'is-visible' : ''}`} role="status" aria-live="polite">
         {announcement && <><Activity size={18} aria-hidden="true" /><span><strong>MatchPulse selected</strong><span>{announcement}</span></span></>}
       </div>

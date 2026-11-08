@@ -1,7 +1,7 @@
 export const DIRECTOR_MODES = {
-  relaxed: { label: 'Relaxed', description: 'Settle into the game. Fewer, more considered switches.' },
-  balanced: { label: 'Balanced', description: 'A comfortable rhythm, with room for the unexpected.' },
-  all_action: { label: 'All Action', description: 'Follow changing scores with a faster pace.' },
+  relaxed: { label: 'Relaxed', description: 'Fewer automatic switches.' },
+  balanced: { label: 'Balanced', description: 'Standard switching pace.' },
+  all_action: { label: 'All Action', description: 'More frequent automatic switches.' },
 };
 export const MODE_STORAGE_KEY = 'matchpulse-director-mode';
 

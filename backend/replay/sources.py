@@ -8,6 +8,11 @@ import time
 from dataclasses import dataclass, field, replace
 from urllib.parse import quote, urlsplit
 
+try:
+    from ..match_metadata import metadata_for_source
+except ImportError:  # Legacy ``python main.py`` from the backend directory.
+    from match_metadata import metadata_for_source
+
 
 def number(value, name, *, minimum=0, maximum=float("inf")):
     if (isinstance(value, bool) or not isinstance(value, (int, float))
@@ -36,6 +41,7 @@ class MatchSource:
     source_url: str | None = field(default=None, repr=False)
     playback_url: str | None = field(default=None, repr=False)
     expires_at: float | None = None
+    metadata: dict | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         if not isinstance(self.match_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", self.match_id):
@@ -63,8 +69,12 @@ class MatchSource:
                 "offset_seconds": self.offset_seconds}
 
     def public_spec(self, healthy=True):
-        return {"match_id": self.match_id, "label": self.label, "url": self.playback_url,
-                "offset_seconds": self.offset_seconds, "healthy": bool(healthy)}
+        result = {"match_id": self.match_id, "label": self.label, "url": self.playback_url,
+                  "offset_seconds": self.offset_seconds, "healthy": bool(healthy), "source_key": self.key}
+        if self.metadata:
+            result["metadata"] = self.metadata
+            result["source_identity"] = self.metadata.get("source_identity", {}).get("digest")
+        return result
 
 
 class SourceRegistry:
@@ -115,8 +125,12 @@ class SourceRegistry:
                     raise TypeError
                 if set(offsets) - {f"cam-{i}" for i in range(1, count + 1)}:
                     raise ValueError
-                sources = [MatchSource(f"cam-{i}", f"Match {i}", offsets.get(f"cam-{i}", 0),
-                                       key=f"match-{i}.mp4") for i in range(1, count + 1)]
+                sources = []
+                for i in range(1, count + 1):
+                    match_id, key = f"cam-{i}", f"match-{i}.mp4"
+                    metadata = metadata_for_source(match_id, key, env.get("S3_BUCKET_NAME") or "match-switcher-poc-videos")
+                    sources.append(MatchSource(match_id, metadata["display_name"] if metadata else f"Match {i}",
+                                               offsets.get(match_id, 0), key=key, metadata=metadata))
             except (ValueError, TypeError) as exc:
                 raise ValueError("Invalid MATCHPULSE_OFFSETS_JSON") from exc
         return cls(sources, bucket=env.get("S3_BUCKET_NAME") or "match-switcher-poc-videos",
@@ -128,6 +142,9 @@ class SourceRegistry:
         now = self.now()
         resolved = []
         for source in self.sources:
+            # Internal IDs alone never identify a custom source as one of the
+            # historical demo fixtures. Match the actual bucket/object binding.
+            source = replace(source, metadata=metadata_for_source(source.match_id, source.key, self.bucket))
             if source.key is None:
                 resolved.append(replace(source, playback_url=source.playback_url or source.source_url))
                 continue

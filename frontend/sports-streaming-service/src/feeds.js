@@ -1,3 +1,5 @@
+import matchCatalogue from './data/matches.json';
+
 const DEFAULT_BASE = 'https://match-switcher-poc-videos.s3.eu-west-2.amazonaws.com';
 const S3_BASE_URL = (process.env.REACT_APP_S3_BASE_URL || DEFAULT_BASE).replace(/\/$/, '');
 const PREVIEW_BASE_URL = (process.env.REACT_APP_PREVIEW_BASE_URL || S3_BASE_URL).replace(/\/$/, '');
@@ -12,11 +14,15 @@ const previewKeyFor = (key) => key.replace(/\.mp4$/i, '-preview-v1.mp4');
 
 export const FEEDS = Array.from({ length: 7 }, (_, i) => {
   const mainKey = TEST_VIDEO_KEY || `match-${i + 1}.mp4`;
+  const metadata = S3_BASE_URL === DEFAULT_BASE ? matchCatalogue.matches.find((match) => match.match_id === `cam-${i + 1}` && match.source_key === mainKey) : null;
   return {
     id: i + 1,
-    label: `Match ${i + 1}`,
+    label: metadata?.display_name || `Match ${i + 1}`,
     cameraId: `cam-${i + 1}`,
     mainKey,
+    sourceKey: mainKey,
+    sourceIdentity: metadata?.source_identity?.digest,
+    metadata,
     previewKey: PREVIEW_KEY || previewKeyFor(mainKey),
   };
 });
@@ -41,10 +47,19 @@ export function registeredFeeds(matches) {
     }
     seen.add(match.match_id);
     const existing = FEEDS.find((feed) => feed.cameraId === match.match_id);
+    const sourceKey = match.source_key || (existing && match.url === getVideoUrl(existing) ? existing.sourceKey : null);
+    const metadata = matchCatalogue.matches.find((item) => item.match_id === match.match_id && item.source_key === sourceKey
+      && (match.source_identity === item.source_identity?.digest || (match.source_identity == null && existing && match.url === getVideoUrl(existing) && existing.metadata)));
+    const serverMetadata = metadata && match.metadata?.match_id === match.match_id && match.metadata.source_key === sourceKey
+      && typeof match.source_identity === 'string' && match.metadata.source_identity?.digest === match.source_identity
+      ? match.metadata : null;
     return [{
       id: existing?.id ?? match.match_id,
       cameraId: match.match_id,
       label: match.label,
+      sourceKey,
+      sourceIdentity: typeof match.source_identity === 'string' ? match.source_identity : metadata?.source_identity?.digest,
+      metadata: serverMetadata || metadata,
       url: match.url,
       previewUrl: match.preview_url || (existing && match.url === getVideoUrl(existing) ? getPreviewUrl(existing) : undefined),
       offsetSeconds: match.offset_seconds,

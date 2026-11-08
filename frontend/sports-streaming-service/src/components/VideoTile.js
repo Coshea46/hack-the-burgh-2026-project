@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { getPreviewUrl, getVideoUrl, sourceOffset } from '../feeds';
 import { boundedTime } from './MainPlayer';
+import ReplayScore from './ReplayScore';
 
 export default function VideoTile({ feed, onClick, paused = false, hidden = false, clock, score, scoreKind = 'model', monitoring = false }) {
   const ref = useRef(null);
@@ -50,21 +51,23 @@ export default function VideoTile({ feed, onClick, paused = false, hidden = fals
 
   return (
     <div className="tile" hidden={hidden} role="button" tabIndex={hidden ? -1 : 0}
+      aria-pressed={hidden}
       style={{ viewTransitionName: `tile-${feed.id}` }}
       aria-label={feed.healthy === false ? `${feed.label} (monitoring unavailable)` : feed.label}
       data-feed-id={feed.id} onClick={onClick}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onClick?.(); }
       }}>
-      <div className="tile__media"><span className="preview-id">{feed.cameraId}</span>
+      <div className="tile__media">
         <video ref={ref} aria-hidden="true" tabIndex={-1} src={source} playsInline
           preload="metadata" muted className={ready ? 'is-ready' : undefined}
           onLoadedData={() => setReady(true)} onError={() => (usingFull ? setFailed(true) : setUsingFull(true))} />
         {failed && <span className="preview-status">Preview unavailable</span>}
       </div>
-      <span className="tile__label"><span className="tile__name">{feed.label}<span aria-hidden="true">↗</span></span>
+      <span className="tile__label"><span className="tile__name">{feed.label}</span>
+        <ReplayScore feed={feed} mediaRef={ref} source={source} />
         <span className="tile__details"><span className={monitoring && feed.healthy !== false ? 'is-monitoring' : ''}>
-          <i aria-hidden="true" />{feed.healthy === false ? 'Monitoring unavailable' : monitoring ? 'Monitoring' : 'Replay source'}</span>
+          {feed.healthy === false ? 'Monitoring unavailable' : 'Replay'}</span>
           {Number.isFinite(score) && <span className="relative-score" title={`Relative ${scoreKind} score; not a goal probability`}>{scoreKind === 'mock' ? 'Mock' : 'Score'} {score.toFixed(3)}</span>}
         </span>
       </span>

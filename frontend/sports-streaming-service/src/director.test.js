@@ -10,7 +10,7 @@ test('director display accepts only known modes and registered finite relative s
   expect(readDirector({ mode: 'balanced', config: { cooldown_seconds: -1 } }, FEEDS).config).toBeNull();
 });
 
-test('Moments is bounded to factual registered selections and valid event kinds', () => {
+test('selection history is bounded to factual registered sources and valid event kinds', () => {
   const event = { id: 1, from_match_id: 'cam-1', to_match_id: 'cam-2', selected_at: 1000,
     playback_time: 12, kind: 'automatic' };
   const value = readDirector({ mode: 'balanced', history: [event, { ...event, id: 2, kind: 'goal' },

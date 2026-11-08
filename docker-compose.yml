@@ -1,11 +1,25 @@
 services:
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     ports:
       - "${MATCHPULSE_BIND_ADDRESS:-127.0.0.1}:8000:8000"
+      - "${MATCHPULSE_BIND_ADDRESS:-127.0.0.1}:8031:8031"
     init: true
     stop_grace_period: 30s
     environment:
+      FOOTBALL_DATA_API_KEY: "${FOOTBALL_DATA_API_KEY:-}"
+      GUARDIAN_API_KEY: "${GUARDIAN_API_KEY:-}"
+      ELEVENLABS_API_KEY: "${ELEVENLABS_API_KEY:-}"
+      MATCHPULSE_CAPTIONS_ENABLED: "${MATCHPULSE_CAPTIONS_ENABLED:-true}"
+      MATCHPULSE_CAPTION_MAX_AUDIO_SECONDS: "${MATCHPULSE_CAPTION_MAX_AUDIO_SECONDS:-30}"
+      MATCHPULSE_CAPTION_BUDGET_USD: "${MATCHPULSE_CAPTION_BUDGET_USD:-0.01}"
+      MATCHPULSE_API_ENABLED: "${MATCHPULSE_API_ENABLED:-true}"
+      MATCHPULSE_API_HOST: "0.0.0.0"
+      MATCHPULSE_API_PORT: "8031"
+      MATCHPULSE_API_ALLOWED_ORIGINS: "${MATCHPULSE_API_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}"
+      MATCHPULSE_CAPTION_DIR: "/app/backend/artifacts/captions"
       MATCHPULSE_MONITOR: "${MATCHPULSE_MONITOR:-false}"
       MATCHPULSE_REPLAY_TRANSPORT: "${MATCHPULSE_REPLAY_TRANSPORT:-websocket}"
       MATCHPULSE_MODAL_WS_URL: "${MATCHPULSE_MODAL_WS_URL:-}"
@@ -34,6 +48,8 @@ services:
       AWS_SESSION_TOKEN: "${AWS_SESSION_TOKEN:-}"
       MODAL_TOKEN_ID: "${MODAL_TOKEN_ID:-}"
       MODAL_TOKEN_SECRET: "${MODAL_TOKEN_SECRET:-}"
+    volumes:
+      - ./backend/artifacts/captions:/app/backend/artifacts/captions:ro
 
   frontend:
     build:
@@ -41,6 +57,7 @@ services:
       dockerfile: Dockerfile
       args:
         REACT_APP_WS_URL: "${REACT_APP_WS_URL:-ws://localhost:8000}"
+        REACT_APP_API_URL: "${REACT_APP_API_URL:-http://localhost:8031}"
     ports:
       - "${MATCHPULSE_BIND_ADDRESS:-127.0.0.1}:3000:80"
     depends_on:

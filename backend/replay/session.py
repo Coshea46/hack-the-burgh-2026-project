@@ -172,7 +172,8 @@ class ReplaySession:
     """
 
     def __init__(self, registry, *, config=None, bridge=None, publish=None,
-                 now=time.time, monotonic=time.monotonic, session_id=None):
+                 now=time.time, monotonic=time.monotonic, session_id=None,
+                 caption_worker=None, caption_max_audio_seconds=30, caption_max_cost_usd=0.01):
         self.registry, self.config, self.bridge = registry, config or SessionConfig(), bridge
         self.publish = publish or (lambda payload: None)
         self.now, self.monotonic = now, monotonic
@@ -210,6 +211,26 @@ class ReplaySession:
         self._unplayable = set()
         self._reserved_compute_usd = 0.0
         self._selection_pending_until = 0.0
+        number(caption_max_audio_seconds, "caption_max_audio_seconds", minimum=1, maximum=30)
+        number(caption_max_cost_usd, "caption_max_cost_usd", minimum=0.0001, maximum=0.01)
+        self.caption_worker = caption_worker
+        self._caption_configured = caption_worker is not None
+        self.caption_max_audio_seconds = caption_max_audio_seconds
+        self.caption_max_cost_usd = caption_max_cost_usd
+        self._caption_loop_owner = None
+        self._caption_user_enabled = True
+        self._caption_enabled = caption_worker is not None
+        self._caption_generation = 0
+        self._caption_status = "paused" if caption_worker is not None else "unavailable"
+        self._caption_reason = "awaiting_playback" if caption_worker is not None else "missing_key"
+        self._caption_deadline = None
+        self._caption_report_received_at = None
+        self._caption_report_sequence = 0
+        self._caption_actual_match_id = None
+        self._caption_active_identity = None
+        self._caption_pending_match_id = None
+        self._caption_pending_until = None
+        self._caption_preparing_report_sequence = None
         self.metrics = {"recommendations": 0, "director_seconds": 0.0, "worker_failures": 0,
                         "control_rpc_count": 0, "control_rpc_seconds": 0.0,
                         "score_rpc_count": 0, "score_rpc_seconds": 0.0,
@@ -265,7 +286,8 @@ class ReplaySession:
                   "current_match_id": self.director.current_match_id,
                   "auto_enabled": self.director.auto_enabled,
                   "manual_hold_until": self.director.manual_hold_until,
-                  "director": self.director.state(now=self.now(), playback_position=self.position)}
+                  "director": self.director.state(now=self.now(), playback_position=self.position),
+                  "captions": self.caption_state()}
         if client_id is not None:
             result["controls_enabled"] = self.controls_enabled(client_id)
         if self.error_code is not None:
@@ -275,6 +297,194 @@ class ReplaySession:
     def _publish_session(self):
         self._next_sequence()
         self.publish(self.snapshot())
+
+    def caption_state(self):
+        return {"available": self.caption_worker is not None, "configured": self._caption_configured,
+                "user_enabled": self._caption_user_enabled, "enabled": self._caption_enabled,
+                "status": self._caption_status, "reason": self._caption_reason,
+                "provider": "elevenlabs", "model": "scribe_v2_realtime",
+                "generation": self._caption_generation, "match_id": self._caption_actual_match_id,
+                "clock_epoch": self.clock_epoch, "deadline": self._caption_deadline,
+                "max_audio_seconds": self.caption_max_audio_seconds,
+                "max_cost_usd": self.caption_max_cost_usd}
+
+    def configure_captions(self, worker, *, configured=None, reason=None):
+        if self._tasks:
+            raise RuntimeError("Configure captions before starting the session")
+        self.caption_worker = worker
+        self._caption_configured = worker is not None if configured is None else bool(configured)
+        self._caption_enabled = worker is not None and self._caption_user_enabled
+        self._caption_status = "paused" if worker is not None else "unavailable"
+        self._caption_reason = reason or ("awaiting_playback" if worker is not None else "missing_key")
+
+    def caption_event(self, event):
+        """The isolated SDK worker calls this from its own bounded reader thread."""
+        loop = self._caption_loop_owner
+        if loop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(self._accept_caption_event, event)
+            except RuntimeError:
+                pass  # A final child callback may race event-loop shutdown.
+
+    def _caption_revoke(self, reason, *, status="paused"):
+        if self.caption_worker is None:
+            return
+        self._caption_generation += 1
+        self._caption_active_identity = None
+        self._caption_status, self._caption_reason = status, reason
+        if self.caption_worker is not None:
+            try:
+                self.caption_worker.stop(reason)
+            except Exception:  # noqa: BLE001 - provider error text may contain credentials
+                self._caption_enabled = False
+                self._caption_status, self._caption_reason = "unavailable", "transport_error"
+
+    def _caption_view(self):
+        if not self._caption_enabled or self.caption_worker is None or self._closing:
+            return None
+        if self._caption_deadline is not None and self.now() >= self._caption_deadline:
+            return None
+        if (self.last_report_at is None or self.monotonic() - self.last_report_at >= 5
+                or self.controller is None or not self.playing or self.stalled or self._ended):
+            return None
+        match_id = self._caption_actual_match_id
+        if match_id != self.director.current_match_id:
+            return None
+        if self._caption_pending_match_id is not None:
+            if match_id == self._caption_pending_match_id:
+                if self._caption_report_sequence == self._caption_preparing_report_sequence:
+                    return None
+                self._caption_pending_match_id = self._caption_pending_until = None
+                self._caption_preparing_report_sequence = None
+            elif self._caption_pending_until is None or self.now() <= self._caption_pending_until:
+                return None
+            else:
+                self._caption_pending_match_id = self._caption_pending_until = None
+        source = next((item for item in self.sources if item.match_id == match_id), None)
+        if source is None:
+            return None
+        identity = source.metadata.get("source_identity", {}).get("digest") if source.metadata else None
+        return {"session_id": self.session_id, "match_id": match_id, "source_key": source.key,
+                "source_identity": identity, "source_url": source.source_url,
+                "offset_seconds": source.offset_seconds, "position": self.position, "playing": True,
+                "rate": self.rate, "stalled": False, "available": True, "active": True, "enabled": True,
+                "clock_epoch": self.clock_epoch, "generation": self._caption_generation,
+                "expires_at": self.now() + max(0, 5 - (self.monotonic() - self.last_report_at)),
+                "report_received_at": self._caption_report_received_at, "deadline": self._caption_deadline}
+
+    def _update_captions(self):
+        if self.caption_worker is None:
+            return
+        if self._caption_enabled and self._caption_deadline is not None and self.now() >= self._caption_deadline:
+            self._caption_enabled = False
+            self._caption_revoke("budget_deadline", status="stopped")
+            self._publish_session()
+            return
+        source = next((item for item in self.sources if item.match_id == self._caption_actual_match_id), None)
+        identity = source.metadata.get("source_identity", {}).get("digest") if source and source.metadata else None
+        if self._caption_enabled and source is not None and (not isinstance(identity, str)
+                or re.fullmatch(r"[a-f0-9]{64}", identity) is None):
+            self._caption_enabled = False
+            self._caption_revoke("source_identity_unverified", status="unavailable")
+            self._publish_session()
+            return
+        view = self._caption_view()
+        if view is None:
+            if self._caption_active_identity is not None:
+                self._caption_revoke("playback_inactive")
+                self._publish_session()
+            return
+        if self._caption_deadline is None:
+            # Loading, paused playback and the ML startup buffer consume no
+            # caption allowance. The first actual ready focused-player report
+            # starts one immutable bound shared by all toggles and generations.
+            self._caption_deadline = self.now() + min(
+                self.caption_max_audio_seconds, self.caption_max_cost_usd * 3600 / 0.39)
+            view["deadline"] = self._caption_deadline
+        identity = (view["match_id"], view["clock_epoch"])
+        if identity != self._caption_active_identity:
+            self._caption_generation += 1
+            view["generation"] = self._caption_generation
+            self._caption_active_identity = identity
+            self._caption_status, self._caption_reason = "connecting", None
+            self._publish_session()
+        try:
+            self.caption_worker.update(view)
+        except Exception:  # noqa: BLE001
+            self._caption_enabled = False
+            self._caption_revoke("transport_error", status="unavailable")
+            self._publish_session()
+
+    def _accept_caption_event(self, event):
+        if (not isinstance(event, dict) or not self._caption_enabled or self._closing
+                or self._caption_active_identity is None or self._caption_view() is None
+                or event.get("session_id") != self.session_id
+                or type(event.get("generation")) is not int or type(event.get("clock_epoch")) is not int
+                or event.get("generation") != self._caption_generation
+                or event.get("clock_epoch") != self.clock_epoch
+                or event.get("match_id") != self._caption_actual_match_id
+                or event.get("model") != "scribe_v2_realtime"):
+            return False
+        state = event.get("state")
+        if state not in ("connecting", "listening", "partial", "committed", "paused", "unavailable", "stopped", "error"):
+            return False
+        text = event.get("text", "")
+        if not isinstance(text, str) or len(text) > 4000:
+            return False
+        view = self._caption_view()
+        if event.get("source_key") != view["source_key"] or event.get("source_identity") != view["source_identity"]:
+            return False
+        result = {"type": "caption", "protocol_version": 1, "session_id": self.session_id,
+                  "sequence": self._next_sequence(), "generation": self._caption_generation,
+                  "clock_epoch": self.clock_epoch, "match_id": event["match_id"],
+                  "source_key": view["source_key"], "source_identity": view["source_identity"],
+                  "provider": "elevenlabs", "model": "scribe_v2_realtime", "state": state,
+                  "text": text, "received_at": self.now()}
+        anchor = event.get("source_anchor_seconds")
+        valid_anchor = (isinstance(anchor, (int, float)) and not isinstance(anchor, bool)
+                        and math.isfinite(anchor) and 0 <= anchor <= view["position"] + view["offset_seconds"] + 0.05)
+        if text and not valid_anchor:
+            return False
+        if valid_anchor:
+            result["source_anchor_seconds"] = anchor
+        words = event.get("words")
+        if words is not None:
+            if not isinstance(words, list) or len(words) > 400:
+                return False
+            projected = []
+            for word in words:
+                if not isinstance(word, dict) or not isinstance(word.get("text"), str) or len(word["text"]) > 100:
+                    return False
+                start, end = word.get("start_seconds"), word.get("end_seconds")
+                if (any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+                        for value in (start, end)) or not valid_anchor
+                        or not anchor <= start <= end <= view["position"] + view["offset_seconds"] + 0.05):
+                    return False
+                projected.append({"text": word["text"], "start_seconds": start, "end_seconds": end})
+            result["words"] = projected
+            if projected:
+                result["playback_lag_seconds"] = max(0, view["position"] + view["offset_seconds"] - projected[-1]["end_seconds"])
+        latency = event.get("latency_seconds")
+        if (not isinstance(latency, bool) and isinstance(latency, (int, float))
+                and math.isfinite(latency) and 0 <= latency <= 60):
+            result["latency_seconds"] = latency
+        reason = event.get("reason")
+        if isinstance(reason, str) and re.fullmatch(r"[a-z_]{1,64}", reason):
+            result["reason"] = reason
+        if state in ("paused", "unavailable", "stopped", "error"):
+            self._caption_reason = result.get("reason")
+        self._caption_status = state
+        self.publish(result)
+        if state in ("unavailable", "stopped", "error"):
+            self._caption_enabled = False
+            self._caption_revoke(result.get("reason", "transport_error"), status=state)
+            self._publish_session()
+        return True
+
+    async def _caption_loop(self):
+        while not self._closing:
+            self._update_captions()
+            await asyncio.sleep(0.1)
 
     def _set_state(self, state, error_code=None):
         if self.state != state or self.error_code != error_code:
@@ -293,6 +503,7 @@ class ReplaySession:
         if client_id in self.clients:
             self.clients.remove(client_id)
         if self.controller == client_id:
+            self._caption_revoke("viewer_disconnected", status="stopped")
             self.controller = self.clients[0] if self.clients else None
             self.playing = False
             self.last_report_at = None
@@ -315,10 +526,46 @@ class ReplaySession:
         kind = message.get("type")
         if kind == "playback":
             return self._receive_playback(message)
+        if kind == "captions":
+            enabled = message.get("enabled")
+            if type(enabled) is not bool:
+                return self._error("invalid_captions")
+            if enabled and self.caption_worker is None:
+                self._caption_user_enabled = True
+                self._publish_session()
+                return self._error("captions_unavailable")
+            if enabled and self._caption_deadline is not None and self.now() >= self._caption_deadline:
+                self._caption_user_enabled = True
+                self._caption_enabled = False
+                self._caption_revoke("budget_deadline", status="stopped")
+                self._publish_session()
+                return self._error("captions_budget_exhausted")
+            self._caption_user_enabled = enabled
+            if enabled != self._caption_enabled:
+                self._caption_enabled = enabled
+                if enabled:
+                    self._caption_status, self._caption_reason = "paused", "awaiting_playback"
+                else:
+                    self._caption_revoke("viewer_disabled", status="disabled")
+            self._publish_session()
+            self._update_captions()
+            return None
+        if kind == "source_preparing":
+            match_id = message.get("match_id")
+            if not isinstance(match_id, str) or match_id not in self.director.records:
+                return self._error("unknown_match")
+            self._caption_pending_match_id, self._caption_pending_until = match_id, None
+            self._caption_preparing_report_sequence = self._caption_report_sequence
+            self._caption_revoke("source_preparing")
+            self._publish_session()
+            return None
         if kind == "select":
             match_id = message.get("match_id")
             if not isinstance(match_id, str) or match_id not in self.director.records:
                 return self._error("unknown_match")
+            if match_id != self.director.current_match_id:
+                self._caption_pending_match_id, self._caption_pending_until = match_id, None
+                self._caption_revoke("manual_selection")
             self.director.manual_select(match_id, now=self.now(), playback_position=self.position)
             self._selection_pending_until = self.monotonic() + 2
             self._last_recommendation = None
@@ -430,6 +677,7 @@ class ReplaySession:
         elif self._paused_at is None:
             self._paused_at = now
         if jumped:
+            self._caption_revoke("seek")
             self.clock_epoch += 1
             self.director.reset(self.clock_epoch)
             self._last_recommendation = None
@@ -448,6 +696,10 @@ class ReplaySession:
                 self._publish_session()
         elif previous_health != self.director.healthy:
             self._publish_session()
+        self._caption_actual_match_id = message["match_id"]
+        self._caption_report_received_at = self.now()
+        self._caption_report_sequence += 1
+        self._update_captions()
         return None
 
     def control(self, *, active=True):
@@ -756,6 +1008,11 @@ class ReplaySession:
                                      "score_kind": "model" if self.config.mode == "real" else "mock",
                                      "playback_time": self.position, "emitted_at": self.now(), **decision,
                                      "director": self.director.state(now=self.now(), playback_position=self.position)}
+        if decision["selected_match_id"] != self.director.current_match_id:
+            self._caption_pending_match_id = decision["selected_match_id"]
+            self._caption_pending_until = decision.get("valid_until", self.now())
+            self._caption_revoke("automatic_selection")
+            self._publish_session()
         self.publish(self._last_recommendation)
         return True
 
@@ -782,18 +1039,36 @@ class ReplaySession:
 
     def start(self):
         if not self._tasks:
+            self._caption_loop_owner = asyncio.get_running_loop()
             self._tasks = [asyncio.create_task(self._control_loop(), name="replay-control"),
                            asyncio.create_task(self._score_loop(), name="replay-scores")]
+            if self.caption_worker is not None:
+                try:
+                    self.caption_worker.start()
+                    self._tasks.append(asyncio.create_task(self._caption_loop(), name="replay-captions"))
+                except Exception:  # noqa: BLE001
+                    self.caption_worker = None
+                    self._caption_enabled = False
+                    self._caption_status, self._caption_reason = "unavailable", "runtime_unavailable"
 
     async def close(self):
         if self._closed:
             return
         closing_started = time.perf_counter()
         self._closing = True
+        self._caption_enabled = False
+        self._caption_revoke("session_closed", status="stopped")
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        if self.caption_worker is not None:
+            try:
+                confirmed = await asyncio.wait_for(asyncio.to_thread(self.caption_worker.close), timeout=4)
+            except Exception:  # noqa: BLE001 - close failures remain sanitized and bounded
+                self.metrics["caption_stop_confirmed"] = False
+            else:
+                self.metrics["caption_stop_confirmed"] = confirmed is True
         if self._start_inflight is not None:
             try:
                 self._handle = await asyncio.wait_for(asyncio.shield(self._start_inflight), timeout=10)
