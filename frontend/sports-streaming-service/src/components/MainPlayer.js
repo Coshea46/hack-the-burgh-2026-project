@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { getVideoUrl } from '../feeds';
+import { getPreviewUrl, getVideoUrl } from '../feeds';
 
 export function boundedTime(time, duration) {
   const safe = Number.isFinite(time) ? Math.max(0, time) : 0;
@@ -9,7 +9,12 @@ export function boundedTime(time, duration) {
 // The DOM element survives every selection. Only a genuinely different URL loads.
 export default function MainPlayer({ feed, clock, seekTo }) {
   const ref = useRef(null);
+  const standinRef = useRef(null);
   const source = getVideoUrl(feed);
+  // While the full video loads, show the match's lightweight preview at the same
+  // moment, so a switch shows the new match instantly and then sharpens.
+  const standinSource = feed.previewKey ? getPreviewUrl(feed) : undefined;
+  const [standinPlaying, setStandinPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [retry, setRetry] = useState(0);
@@ -56,7 +61,10 @@ export default function MainPlayer({ feed, clock, seekTo }) {
       video.playbackRate = target.rate;
       video.volume = target.volume;
       video.muted = target.muted;
-      const time = boundedTime(target.time, video.duration);
+      // Start where the stand-in has reached, so sharpening doesn't jump back.
+      const standin = standinRef.current;
+      const from = standin && !standin.paused && standin.currentTime > 0 ? standin.currentTime : target.time;
+      const time = boundedTime(from, video.duration);
       clock.current.time = time;
       if (Math.abs(video.currentTime - time) > 0.05) video.currentTime = time;
       ready();
@@ -82,6 +90,26 @@ export default function MainPlayer({ feed, clock, seekTo }) {
     };
   }, [source, clock, retry]);
 
+  // Stand-in: play the preview from the live time while loading; pause it once the
+  // full video has faded in over it.
+  useEffect(() => {
+    const standin = standinRef.current;
+    if (!standinSource) return undefined;
+    if (!loading) {
+      const timer = setTimeout(() => standin.pause(), 300);
+      return () => clearTimeout(timer);
+    }
+    const start = () => {
+      standin.currentTime = boundedTime(clock.current.time, standin.duration);
+      if (clock.current.playing) standin.play()?.catch(() => {});
+    };
+    if (standin.readyState >= 1) start();
+    else standin.addEventListener('loadedmetadata', start, { once: true });
+    return () => standin.removeEventListener('loadedmetadata', start);
+  }, [loading, standinSource, clock]);
+
+  useEffect(() => { setStandinPlaying(false); }, [standinSource]);
+
   // External seek (the backend's live timestamp). Declared after the effect above
   // so its metadata listener runs last and wins. Previews follow via the shared clock.
   useEffect(() => {
@@ -101,7 +129,10 @@ export default function MainPlayer({ feed, clock, seekTo }) {
     <div className="tile tile--main" aria-busy={loading} style={{ viewTransitionName: 'main-player' }}>
       <div className="tile__media">
         <video ref={ref} aria-label={feed.label + ' video'} controls loop playsInline preload="auto" />
-        <span className={`player-status ${loading ? 'is-visible' : ''}`} role="status">{loading ? 'Loading match...' : ''}</span>
+        <video ref={standinRef} className={`standin ${loading && standinPlaying ? 'is-visible' : ''}`}
+          src={standinSource} aria-hidden="true" tabIndex={-1} muted playsInline preload="metadata"
+          onPlaying={() => setStandinPlaying(true)} onError={() => setStandinPlaying(false)} />
+        <span className={`player-status ${loading && !standinPlaying ? 'is-visible' : ''}`} role="status">{loading && !standinPlaying ? 'Loading match...' : ''}</span>
         {error && <div className="player-error" role="alert">
           <span>Video unavailable.</span>
           <button className="theme-toggle" onClick={() => setRetry((value) => value + 1)}>Retry</button>

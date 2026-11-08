@@ -1,6 +1,10 @@
 const DEFAULT_BASE = 'https://match-switcher-poc-videos.s3.eu-west-2.amazonaws.com';
 const S3_BASE_URL = (process.env.REACT_APP_S3_BASE_URL || DEFAULT_BASE).replace(/\/$/, '');
-const PREVIEW_BASE_URL = (process.env.REACT_APP_PREVIEW_BASE_URL || S3_BASE_URL).replace(/\/$/, '');
+// Tiles load from S3's path-style address. Browsers allow only ~6 connections per
+// host, so serving the main player and 6 tiles from one host made the 7th video
+// queue. A second host gives the tiles their own connection pool.
+const DEFAULT_PREVIEW_BASE = 'https://s3.eu-west-2.amazonaws.com/match-switcher-poc-videos';
+const PREVIEW_BASE_URL = (process.env.REACT_APP_PREVIEW_BASE_URL || DEFAULT_PREVIEW_BASE).replace(/\/$/, '');
 const TEST_VIDEO_KEY = process.env.REACT_APP_TEST_VIDEO_KEY;
 const PREVIEW_KEY = process.env.REACT_APP_TEST_PREVIEW_KEY;
 
@@ -31,3 +35,6 @@ export function feedIdFromTarget(target) {
   const id = match ? Number(match[1]) : NaN;
   return FEEDS.some((feed) => feed.id === id) ? id : null;
 }
+
+// Full video for a tile whose preview doesn't exist yet, from the tiles' host.
+export const getTileFallbackUrl = (feed) => objectUrl(PREVIEW_BASE_URL, feed.mainKey || feed.key);

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { getPreviewUrl, getVideoUrl } from '../feeds';
+import { getPreviewUrl, getTileFallbackUrl } from '../feeds';
 import { boundedTime } from './MainPlayer';
 
 export default function VideoTile({ feed, onClick, paused = false, hidden = false, clock }) {
@@ -8,7 +8,7 @@ export default function VideoTile({ feed, onClick, paused = false, hidden = fals
   const [ready, setReady] = useState(false);
   // Until a match's lightweight preview exists in S3, fall back to its full video.
   const [usingFull, setUsingFull] = useState(false);
-  const source = usingFull ? getVideoUrl(feed) : getPreviewUrl(feed);
+  const source = usingFull ? getTileFallbackUrl(feed) : getPreviewUrl(feed);
 
   // Fade the preview in once it has a frame; reset only when the URL changes.
   useEffect(() => { setReady(ref.current.readyState >= 2); }, [source]);
@@ -25,9 +25,13 @@ export default function VideoTile({ feed, onClick, paused = false, hidden = fals
         return;
       }
       if (video.readyState < 1) return;
+      // Seeking restarts a tile's download, so tolerate small drift (and more while it is
+      // still buffering) and only jump when the tile is genuinely out of step.
+      const buffering = video.readyState < 3;
       if (clock) {
         const target = boundedTime(clock.current.time, video.duration);
-        if (!video.seeking && Math.abs(video.currentTime - target) > 0.75) video.currentTime = target;
+        const drift = Math.abs(video.currentTime - target);
+        if (!video.seeking && drift > (buffering ? 10 : 2)) video.currentTime = target;
         video.playbackRate = clock.current.rate;
       }
       if (clock?.current.playing === false) video.pause();

@@ -1,7 +1,7 @@
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import App from './App';
 import MainPlayer, { boundedTime } from './components/MainPlayer';
-import { FEEDS, getVideoUrl, getPreviewUrl } from './feeds';
+import { FEEDS, getVideoUrl, getPreviewUrl, getTileFallbackUrl } from './feeds';
 
 beforeEach(() => localStorage.clear());
 
@@ -126,7 +126,7 @@ test('main failures expose retry; a missing preview falls back to the full video
   const preview = container.querySelector('[data-feed-id="2"] video');
   expect(preview).toHaveAttribute('src', getPreviewUrl(FEEDS[1]));
   fireEvent.error(preview);
-  expect(preview).toHaveAttribute('src', getVideoUrl(FEEDS[1]));
+  expect(preview).toHaveAttribute('src', getTileFallbackUrl(FEEDS[1]));
   expect(screen.queryByText('Preview unavailable')).not.toBeInTheDocument();
   fireEvent.error(preview);
   expect(screen.getByText('Preview unavailable')).toBeInTheDocument();
@@ -229,4 +229,36 @@ describe('backend WebSocket', () => {
       jest.useRealTimers();
     }
   });
+});
+
+test('tiles load from a different host than the main player', () => {
+  const host = (url) => new URL(url).host;
+  expect(host(getVideoUrl(FEEDS[0]))).toBe('match-switcher-poc-videos.s3.eu-west-2.amazonaws.com');
+  FEEDS.forEach((feed) => {
+    expect(host(getPreviewUrl(feed))).toBe('s3.eu-west-2.amazonaws.com');
+    expect(host(getTileFallbackUrl(feed))).toBe('s3.eu-west-2.amazonaws.com');
+  });
+  expect(getTileFallbackUrl(FEEDS[6])).toMatch(/\/match-switcher-poc-videos\/match-7\.mp4$/);
+});
+
+test('switching shows the preview stand-in instantly, then hands over without jumping back', () => {
+  const { container } = render(<App />);
+  const main = screen.getByLabelText('Match 1 video');
+  const standin = container.querySelector('.standin');
+  ready(main);
+  main.currentTime = 50;
+  fireEvent.timeUpdate(main);
+  fireEvent.click(screen.getByRole('button', { name: 'Match 3' }));
+  expect(standin).toHaveAttribute('src', getPreviewUrl(FEEDS[2]));
+  // The stand-in starts playing: it covers the player and the loading text stays hidden.
+  Object.defineProperty(standin, 'paused', { configurable: true, value: false });
+  standin.currentTime = 53;
+  fireEvent.playing(standin);
+  expect(standin).toHaveClass('is-visible');
+  expect(container.querySelector('.player-status')).not.toHaveClass('is-visible');
+  // The full video becomes ready: it starts where the stand-in reached and the stand-in fades out.
+  main.currentTime = 0;
+  ready(main);
+  expect(main.currentTime).toBe(53);
+  expect(standin).not.toHaveClass('is-visible');
 });

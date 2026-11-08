@@ -105,3 +105,8 @@ h2 { margin: 0; color: var(--muted); font-size: 13px; font-weight: 500; }
   .header-actions { gap: 6px; }
   .connection__label { display: none; }
 }
+
+/* Stand-in preview shown over the main player while the full video loads. */
+.standin { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; pointer-events: none; opacity: 0; transition: opacity 250ms var(--ease); }
+.standin.is-visible { opacity: 1; transition-duration: 0ms; }
+@media (prefers-reduced-motion: reduce) { .standin { transition: none; } }
