@@ -1,0 +1,18 @@
+{
+  "research_distribution": "matchpulse",
+  "research_version": "0.1.0",
+  "wheel_filename": "matchpulse-0.1.0-py3-none-any.whl",
+  "wheel_sha256": "d2eec093101eb85106ec2cff8329c61f3c386546244373a8f8ddebf674d62ef8",
+  "feature_schema_version": "matchpulse-215-v1",
+  "yolo_filename": "yolo26s.pt",
+  "yolo_sha256": "646f8bc3fe0a656803d95c294f7852321748cb29d13466a1af8862e2db384a1b",
+  "source": "Existing read-only Stage 1 runtime artifact; no research build or controller executed",
+  "detector": {
+    "image_size": 640,
+    "batch_size": 16,
+    "confidence": 0.15,
+    "ball_confidence": 0.08,
+    "person_class": 0,
+    "ball_class": 32
+  }
+}
