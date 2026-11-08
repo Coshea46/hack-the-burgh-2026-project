@@ -136,8 +136,9 @@ class ModalInterestScorer:
                 )(checkpoint_name=self.config.checkpoint)
                 # Detect a missing/invalid real bundle before paying for feature extraction.
                 metadata = _get_result(self._worker.ready.spawn(), self.sdk, self.config.call_timeout_seconds)
-                if metadata != {"schema": SCHEMA_VERSION, "input_shape": [75, 215],
-                                "audio_required": True, "model_input_size": 215}:
+                required = {"schema": SCHEMA_VERSION, "input_shape": [75, 215],
+                            "audio_required": True, "model_input_size": 215}
+                if not isinstance(metadata, dict) or any(metadata.get(key) != value for key, value in required.items()):
                     raise ValueError("Deployed classifier worker has an incompatible schema")
                 self._ready = True
         return self

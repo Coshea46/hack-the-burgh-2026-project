@@ -109,6 +109,18 @@ def test_real_modal_cpu_batch_and_readiness_once():
     assert parameters == [{"checkpoint_name": "v1/classifier.pt"}]
 
 
+def test_cpu_readiness_accepts_audit_details_while_preserving_required_contract():
+    audit = {"schema": "matchpulse-215-v1", "input_shape": [75, 215],
+             "audio_required": True, "model_input_size": 215, "bundle_sha256": "a" * 64,
+             "model_version": "v1/classifier.pt", "architecture": {"kind": "gru", "hidden_size": 64}}
+    sdk, *_ = sdk_fixture(ready=lambda: Handle(audit))
+    assert ModalInterestScorer(InferenceConfig(mode="real", checkpoint="v1/classifier.pt"), sdk=sdk).prepare()
+    audit["model_input_size"] = 210
+    sdk, *_ = sdk_fixture(ready=lambda: Handle(audit))
+    with pytest.raises(ValueError, match="schema"):
+        ModalInterestScorer(InferenceConfig(mode="real", checkpoint="v1/classifier.pt"), sdk=sdk).prepare()
+
+
 def test_missing_remote_checkpoint_raises_instead_of_mocking():
     sdk, *_ = sdk_fixture(ready=lambda: Handle(error=FileNotFoundError("missing classifier.pt")))
     scorer = ModalInterestScorer(InferenceConfig(mode="real", checkpoint="classifier.pt"), sdk=sdk)

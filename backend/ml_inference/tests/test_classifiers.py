@@ -3,7 +3,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from backend.ml_inference.classifiers import MockInterestScorer, ResearchInterestScorer
+from backend.ml_inference.classifiers import (
+    MockInterestScorer,
+    ResearchInterestScorer,
+    validate_replay_classifier,
+)
 
 
 def features(value=0.25):
@@ -99,3 +103,73 @@ def test_real_adapter_rejects_bad_batch_result(tmp_path):
     scorer = ResearchInterestScorer(path, loader=lambda *a, **kw: model)
     with pytest.raises(ValueError, match="batch dimension"):
         scorer.predict_scores({"a": features()})
+
+
+def replay_fixture(tmp_path):
+    path = tmp_path / "classifier.pt"
+    path.write_bytes(b"strict-readiness fixture, never a trained model")
+    info = metadata()
+    info.update(checkpoint_version="matchpulse-interest-v1",
+                architecture={"kind": "gru", "input_size": 215, "hidden_size": 64},
+                normalization={"version": "masked-channel-zscore-v1", "schema": "matchpulse-215-v1",
+                               "fitted_split": "train", "mean": [0] * 215,
+                               "scale": [1] * 215, "count": [10] * 215},
+                dataset_audit_sha256="a" * 64, decision_threshold=0.5,
+                threshold_selection_split="valid")
+    gru = SimpleNamespace(input_size=215, hidden_size=64, num_layers=1, bidirectional=False, batch_first=True)
+
+    def no_prediction(*args):
+        raise AssertionError("Readiness must not fabricate a prediction")
+
+    classifier = SimpleNamespace(metadata=info, model=SimpleNamespace(gru=gru, training=False),
+                                 predict_batch=no_prediction)
+    scorer = ResearchInterestScorer(path, loader=lambda *a, **kw: classifier)
+    return scorer, classifier
+
+
+def test_replay_readiness_audits_real_model_structure_without_prediction(tmp_path):
+    import hashlib
+
+    scorer, _ = replay_fixture(tmp_path)
+    audit = validate_replay_classifier(scorer, model_version="v1/classifier.pt")
+    assert audit["bundle_sha256"] == hashlib.sha256(scorer.path.read_bytes()).hexdigest()
+    assert audit["model_version"] == "v1/classifier.pt"
+    assert audit["architecture"]["num_layers"] == 1
+    assert audit["normalization"]["fitted_split"] == "train"
+    assert audit["dataset_audit_sha256"] == "a" * 64
+
+
+@pytest.mark.parametrize("field,value", [("kind", "tcn"), ("hidden_size", 32), ("input_size", 210)])
+def test_replay_rejects_wrong_architecture_without_restricting_legacy_adapter(tmp_path, field, value):
+    scorer, classifier = replay_fixture(tmp_path)
+    classifier.metadata["architecture"][field] = value
+    scorer.prepare()  # The legacy adapter remains architecture-generic.
+    with pytest.raises(ValueError, match="GRU"):
+        validate_replay_classifier(scorer)
+
+
+@pytest.mark.parametrize("field,value", [("num_layers", 2), ("num_layers", True),
+                                        ("bidirectional", True), ("hidden_size", 32), ("batch_first", False)])
+def test_replay_checks_actual_gru_instead_of_only_claimed_metadata(tmp_path, field, value):
+    scorer, classifier = replay_fixture(tmp_path)
+    setattr(classifier.model.gru, field, value)
+    with pytest.raises(ValueError, match="one-layer"):
+        validate_replay_classifier(scorer)
+
+
+@pytest.mark.parametrize("field,value", [("fitted_split", "valid"), ("mean", [float("nan")] * 215),
+                                        ("scale", [0] * 215), ("count", [0.5] * 215)])
+def test_replay_requires_saved_training_normalization(tmp_path, field, value):
+    scorer, classifier = replay_fixture(tmp_path)
+    classifier.metadata["normalization"][field] = value
+    with pytest.raises(ValueError, match="normalization"):
+        validate_replay_classifier(scorer)
+
+
+@pytest.mark.parametrize("field,value", [("dataset_audit_sha256", "unknown"),
+                                        ("threshold_selection_split", "test"), ("decision_threshold", float("nan"))])
+def test_replay_requires_audited_provenance_and_validation_threshold(tmp_path, field, value):
+    scorer, classifier = replay_fixture(tmp_path)
+    classifier.metadata[field] = value
+    with pytest.raises(ValueError):
+        validate_replay_classifier(scorer)

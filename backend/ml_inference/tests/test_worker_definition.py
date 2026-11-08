@@ -33,11 +33,19 @@ def load_app(monkeypatch):
             volumes.append(name)
             return SimpleNamespace(reload=lambda: None)
 
+    def asgi_app(**kwargs):
+        def decorate(function):
+            function.asgi_options = kwargs
+            return function
+        return decorate
+
     sdk = SimpleNamespace(
         App=App, Volume=Volume, is_local=lambda: False,
         Image=SimpleNamespace(debian_slim=lambda **kw: object()),
         parameter=lambda **kw: kw["default"], enter=lambda: lambda f: f,
         method=lambda: lambda f: f,
+        asgi_app=asgi_app,
+        Secret=SimpleNamespace(from_name=lambda name: SimpleNamespace(name=name)),
     )
     monkeypatch.setitem(sys.modules, "modal", sdk)
     path = Path(__file__).parents[1] / "modal_app.py"

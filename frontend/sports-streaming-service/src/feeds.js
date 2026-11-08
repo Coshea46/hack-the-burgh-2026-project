@@ -22,8 +22,36 @@ export const FEEDS = Array.from({ length: 7 }, (_, i) => {
 });
 
 const objectUrl = (base, key) => `${base}/${key.split('/').map(encodeURIComponent).join('/')}`;
-export const getVideoUrl = (feed) => objectUrl(S3_BASE_URL, feed.mainKey || feed.key);
-export const getPreviewUrl = (feed) => objectUrl(PREVIEW_BASE_URL, feed.previewKey);
+export const getVideoUrl = (feed) => feed.url || objectUrl(S3_BASE_URL, feed.mainKey || feed.key);
+export const getPreviewUrl = (feed) => feed.previewUrl || (feed.url ? feed.url : objectUrl(PREVIEW_BASE_URL, feed.previewKey));
+export const sourceOffset = (feed) => Number.isFinite(feed.offsetSeconds) ? feed.offsetSeconds : 0;
+
+// The server registers actual sources. Never derive a signed preview URL by
+// modifying its query string; registered sources use the original video unless
+// the server explicitly supplies a separate preview URL.
+export function registeredFeeds(matches) {
+  if (!Array.isArray(matches) || matches.length > 7) return [];
+  const seen = new Set();
+  return matches.flatMap((match) => {
+    if (!match || typeof match.match_id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(match.match_id) || seen.has(match.match_id)
+      || typeof match.label !== 'string' || !match.label || match.label.length > 100 || !Number.isFinite(match.offset_seconds)) return [];
+    try { if (!['https:', 'http:'].includes(new URL(match.url).protocol)) return []; } catch { return []; }
+    if (match.preview_url) {
+      try { if (!['https:', 'http:'].includes(new URL(match.preview_url).protocol)) return []; } catch { return []; }
+    }
+    seen.add(match.match_id);
+    const existing = FEEDS.find((feed) => feed.cameraId === match.match_id);
+    return [{
+      id: existing?.id ?? match.match_id,
+      cameraId: match.match_id,
+      label: match.label,
+      url: match.url,
+      previewUrl: match.preview_url || (existing && match.url === getVideoUrl(existing) ? getPreviewUrl(existing) : undefined),
+      offsetSeconds: match.offset_seconds,
+      healthy: match.healthy !== false,
+    }];
+  });
+}
 
 // Maps a backend `target_feed` ("cam-3", "3" or 3) to a feed id, or null if unknown.
 export function feedIdFromTarget(target) {

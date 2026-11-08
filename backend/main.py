@@ -1,44 +1,41 @@
+"""Application backend: source registration, replay clock, director and WebSocket."""
+
 import asyncio
-import websockets
-import threading
+import logging
 import os
-import boto3
-import numpy as np
 
-from websocket_manager import WebSocketManager
-from video_ingester import S3VideoIngester
-from video_processor import VideoProcessor
-
-CLIP_SIZE_SECONDS = 5
-STRIDE_SECONDS = 4
-VIDEO_KEYS = ["matches/230024607-Video_presentation.mp4"]
+if __package__:
+    from .replay import ReplaySession, SessionConfig, SourceRegistry
+    from .websocket_manager import WebSocketManager
+else:  # ``python main.py`` in the backend Docker image
+    from replay import ReplaySession, SessionConfig, SourceRegistry
+    from websocket_manager import WebSocketManager
 
 
 class AppController:
-    """The central orchestrator."""
-
-    def __init__(self):
-        self.bucket_name = os.environ.get("S3_BUCKET_NAME")
-        if not self.bucket_name:
-            raise ValueError("ERROR: S3_BUCKET_NAME environment variable not set.")
-
-        self.ws_manager = WebSocketManager()
-        self.processor = VideoProcessor()
-        self.ingester = S3VideoIngester(
-            CLIP_SIZE_SECONDS, STRIDE_SECONDS, self.bucket_name, VIDEO_KEYS, self.ws_manager, self.processor
-        )
+    def __init__(self, *, registry=None, config=None, bridge=None, host=None, port=None):
+        self.session = ReplaySession(registry or SourceRegistry.from_env(),
+                                     config=config or SessionConfig.from_env(), bridge=bridge)
+        self.ws_manager = WebSocketManager(self.session,
+                                           host=host or os.environ.get("MATCHPULSE_HOST", "0.0.0.0"),
+                                           port=int(os.environ.get("MATCHPULSE_PORT", "8000")) if port is None else port)
 
     async def start(self):
-        # Start the video ingestion loop in a background daemon thread.
-        ingestion_thread = threading.Thread(target=self.ingester.run_loop, daemon=True)
-        ingestion_thread.start()
-
-        await self.ws_manager.serve()
+        await self.session.initialize()
+        self.session.start()
+        try:
+            await self.ws_manager.serve()
+        finally:
+            await self.session.close()
 
 
 if __name__ == "__main__":
-    app = AppController()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    # SDK debug logs can contain signed URLs. Application errors report classes,
+    # never media payloads or source credentials.
+    for name in ("boto3", "botocore", "urllib3", "websockets"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     try:
-        asyncio.run(app.start())
+        asyncio.run(AppController().start())
     except KeyboardInterrupt:
-        print("\nServer shutting down.", flush=True)
+        pass

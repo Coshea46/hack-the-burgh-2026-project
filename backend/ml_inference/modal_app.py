@@ -11,6 +11,7 @@ from time import perf_counter
 import modal
 
 from backend.ml_inference.config import APP_NAME, MODEL_VOLUME
+from backend.ml_inference.replay_contract import MAX_GPU_WORKERS
 
 PACKAGE = Path(__file__).resolve().parent
 GPU = os.environ.get("MATCHPULSE_ML_GPU", "T4")
@@ -36,7 +37,9 @@ if modal.is_local():
         .add_local_file(str(wheel), "/opt/runtime/matchpulse-0.1.0-py3-none-any.whl", copy=True)
         .run_commands("python -m pip install --no-deps /opt/runtime/matchpulse-0.1.0-py3-none-any.whl")
         .add_local_file(str(weights), "/opt/models/yolo26s.pt", copy=True)
-        .env({"PYTHONPATH": "/opt/client", "YOLO_CONFIG_DIR": "/tmp/matchpulse-inference-ultralytics"})
+        .env({"PYTHONPATH": "/opt/client", "YOLO_CONFIG_DIR": "/tmp/matchpulse-inference-ultralytics",
+              "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
+              "NUMEXPR_NUM_THREADS": "1"})
         .add_local_dir(str(PACKAGE), "/opt/client/backend/ml_inference",
                        ignore=["tests/**", "runtime/**", "artifacts/**", ".venv*/**",
                                "**/__pycache__/**", "**/*.pyc", ".pytest_cache/**"])
@@ -225,20 +228,161 @@ class ClassifierWorker:
 
     @modal.enter()
     def load(self):
-        from backend.ml_inference.classifiers import ResearchInterestScorer
+        from backend.ml_inference.classifiers import (
+            ResearchInterestScorer,
+            validate_replay_classifier,
+        )
 
         root = Path("/models").resolve()
         target = (root / self.checkpoint_name).resolve()
         if not target.is_relative_to(root) or target == root:
             raise ValueError("Classifier path must remain inside the inference model Volume")
         models.reload()
-        self.scorer = ResearchInterestScorer(target, device="cpu").prepare()
+        self.scorer = ResearchInterestScorer(target, device="cpu")
+        self.readiness = validate_replay_classifier(self.scorer, model_version=self.checkpoint_name)
 
     @modal.method()
     def ready(self):
-        return {"schema": "matchpulse-215-v1", "input_shape": [75, 215],
-                "audio_required": True, "model_input_size": 215}
+        return self.readiness
 
     @modal.method()
     def predict(self, features):
         return self.scorer.predict_scores(features)
+
+
+@app.cls(image=image, gpu=GPU, cpu=(4, 8), memory=(4096, 8192),
+         volumes={'/models': models}, max_containers=MAX_GPU_WORKERS, min_containers=0,
+         secrets=[modal.Secret.from_name('matchpulse-inference-replay-auth')],
+         buffer_containers=0, scaledown_window=5, timeout=4000,
+         startup_timeout=300, retries=0, include_source=False)
+class ReplayWorker:
+    """A single persistent GPU pool, multiplexing independent logical matches."""
+
+    @modal.enter()
+    def load(self):
+        import cv2
+        import numpy as np
+        import torch
+        from matchpulse.features import DetectorConfig
+        from matchpulse.features.detector import YoloDetector
+
+        started = perf_counter()
+        if not torch.cuda.is_available():
+            raise RuntimeError('Replay monitoring requires CUDA')
+        cv2.setNumThreads(1)
+        torch.set_num_threads(2)
+        self.detector_config = DetectorConfig(weights='/opt/models/yolo26s.pt', device='cuda:0',
+            half=True, image_size=640, batch_size=16, confidence=.15, ball_confidence=.08,
+            person_class=0, ball_class=32)
+        self.detector = YoloDetector(self.detector_config)
+        # One startup warmup, before viewers leave the explicit startup buffer.
+        # These synthetic images never produce a score or success assertion.
+        warmup_start = perf_counter()
+        blank = np.zeros((720, 1280, 3), np.uint8)
+        self.detector.detect([blank] * 16)
+        self.runtime = {'gpu': torch.cuda.get_device_name(0), 'torch': str(torch.__version__),
+                        'cuda': torch.version.cuda, 'container_id': os.environ.get('MODAL_TASK_ID'),
+                        **detector_runtime(self.detector, True),
+                        'warmup_seconds': perf_counter() - warmup_start,
+                        'initialization_seconds': perf_counter() - started}
+        self.runtime['numerical_threads'] = {key: os.environ.get(key) for key in
+            ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMEXPR_NUM_THREADS')}
+        self.classifiers = {}
+
+    def _scorer(self, spec):
+        self._scorer_phase = 'load'
+        from backend.ml_inference.classifiers import (
+            MockInterestScorer,
+            ResearchInterestScorer,
+            validate_replay_classifier,
+        )
+
+        if spec['mode'] == 'features_mock':
+            return MockInterestScorer(spec.get('mock_scores'))
+        self._scorer_phase = 'resolve'
+        # Modal's mount can resolve to a different filesystem location. Compare
+        # both sides in the same resolved namespace, as ClassifierWorker does.
+        root = Path('/models').resolve()
+        target = (root / spec['checkpoint']).resolve()
+        if not target.is_relative_to(root) or target == root:
+            raise ValueError('Checkpoint must remain inside inference-only storage')
+        if str(target) not in self.classifiers:
+            self._scorer_phase = 'volume_reload'
+            models.reload()
+            self._scorer_phase = 'load'
+            scorer = ResearchInterestScorer(target, device='cpu').prepare()
+            self._scorer_phase = 'validate'
+            validate_replay_classifier(scorer, model_version=spec['model_version'])
+            if len(self.classifiers) >= 2:
+                self.classifiers.pop(next(iter(self.classifiers)))
+            self.classifiers[str(target)] = scorer
+        return self.classifiers[str(target)]
+
+    @modal.method()
+    def run(self, spec):
+        from backend.ml_inference.replay_contract import REPLAY_DICT, validate_session
+        from backend.ml_inference.replay_metrics import ResourceSampler
+        from backend.ml_inference.replay_runner import run_replay_session
+        from backend.ml_inference.replay_state import LatestStateChannel
+
+        validate_session(spec)
+        state = modal.Dict.from_name(REPLAY_DICT, create_if_missing=True)
+        session_id = spec['session_id']
+        score_key = 'scores:' + session_id + (':' + spec['shard_id'] if 'shard_id' in spec else '')
+        try:
+            scorer = self._scorer(spec)
+        except Exception as exc:  # noqa: BLE001 - sanitize checkpoint errors before compact publication
+            import time
+            phase = getattr(self, '_scorer_phase', 'load')
+            if phase not in ('resolve', 'volume_reload', 'load', 'validate'):
+                phase = 'load'
+            # Only these application-owned static messages map to public codes.
+            # Never forward arbitrary loader/SDK messages containing paths/URIs.
+            codes = {
+                'Checkpoint must remain inside inference-only storage': 'checkpoint_path_escape',
+                'Portable checkpoint must be a nonempty file no larger than 64 MiB': 'checkpoint_file_invalid',
+                'Portable checkpoint exceeds 64 MiB': 'checkpoint_file_too_large',
+                'Portable classifier metadata must be a mapping': 'checkpoint_metadata_invalid',
+                'Replay requires a portable full-audio matchpulse-215-v1 checkpoint': 'checkpoint_schema_mismatch',
+                'Replay requires the full-audio hidden-size-64 GRU': 'checkpoint_architecture_mismatch',
+                'Loaded replay model must be an eval-mode one-layer unidirectional GRU': 'checkpoint_model_structure',
+                'Replay requires saved training-only normalization provenance': 'checkpoint_normalization_provenance',
+                'Replay normalization must describe all 215 finite channels': 'checkpoint_normalization_invalid',
+                'Replay requires dataset audit SHA256 provenance': 'checkpoint_dataset_provenance',
+                'Replay requires a validation-selected operating threshold': 'checkpoint_threshold_invalid',
+                'Invalid replay model version': 'checkpoint_version_invalid',
+                'Classifier does not implement the five-second MatchPulse schema': 'checkpoint_schema_mismatch',
+                'Production requires a full-audio 215-channel classifier bundle': 'checkpoint_audio_schema',
+            }
+            clock = state.get('control:' + session_id, {})
+            result = {'session_id': session_id, 'model_version': spec['model_version'],
+                      'clock_epoch': clock.get('clock_epoch', 0), 'worker_sequence': 1,
+                      'score_kind': 'model' if spec['mode'] == 'real' else 'mock',
+                      'state': 'error', 'reason': 'checkpoint_unavailable',
+                      'error_type': type(exc).__name__, 'error_phase': phase,
+                      'error_code': codes.get(str(exc), 'checkpoint_' + phase + '_failed'),
+                      'produced_at': time.time(), 'scores': [], 'health': {}}
+            state.put(score_key, result)
+            return result
+        with ResourceSampler() as resources, LatestStateChannel(
+                lambda: state.get('control:' + session_id, None),
+                lambda record: state.put(score_key, record)) as channel:
+            channel.wait_initial(timeout=5)
+            return run_replay_session(spec, self.detector,
+                channel.control, channel.publish, scorer=scorer,
+                detector_config=self.detector_config, runtime=self.runtime,
+                state_metrics=lambda: {**channel.stats, 'resources': resources.stats})
+
+    @modal.method()
+    def validate_sources(self, spec):
+        from backend.ml_inference.replay_validation import validate_direct_sources
+
+        return validate_direct_sources(spec, self.detector, self.detector_config, self.runtime)
+
+    @modal.asgi_app(requires_proxy_auth=True)
+    def web(self):
+        from backend.ml_inference.replay_asgi import ReplayASGI
+
+        return ReplayASGI(self.detector, self._scorer,
+            detector_config=self.detector_config, runtime=self.runtime,
+            phase_getter=lambda: getattr(self, '_scorer_phase', 'load'))

@@ -1,5 +1,4 @@
-numpy<2
 boto3==1.28.62
 websockets==11.0.3
-imageio==2.33.1
-imageio-ffmpeg==0.4.9
+modal==1.6.3
+numpy>=1.24,<3
