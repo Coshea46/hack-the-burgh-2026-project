@@ -606,7 +606,9 @@ describe('backend WebSocket', () => {
     const { container } = render(<App />);
     join({ director: director({ history: [{ id: 1, from_match_id: 'cam-1', to_match_id: 'cam-3',
       selected_at: Date.now() / 1000 - 18, playback_time: 110, kind: 'automatic', score: .732 }] }) });
-    expect(screen.getByText(/Prerecorded replay/)).toBeVisible();
+    expect(screen.getByText(/Replay footage/)).toBeVisible();
+    expect(screen.queryByText(/^Prerecorded replay$/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Watching$/)).not.toBeInTheDocument();
     expect(within(screen.getByRole('navigation', { name: 'Main navigation' })).getAllByRole('link')
       .map((link) => link.textContent)).toEqual(['Watch', 'Tables', 'News']);
     expect(container.querySelector('#moments')).toBeNull();

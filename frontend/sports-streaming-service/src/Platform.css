@@ -9,8 +9,8 @@
 .platform-search:focus-within { outline: 2px solid var(--accent); outline-offset: 3px; }
 .platform-search .primary-button { flex-shrink: 0; min-height: 42px; padding-inline: 19px; }
 .competition-select { display: grid; gap: 8px; min-width: 220px; font-size: 13px; font-weight: 500; color: var(--text); }
-.competition-select select, .caption-options select { min-height: 44px; padding: 10px 34px 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--glass); color: var(--text); font: inherit; }
-.competition-select option, .caption-options option { background: var(--bg); color: var(--text); }
+.competition-select select { min-height: 44px; padding: 10px 34px 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--glass); color: var(--text); font: inherit; }
+.competition-select option { background: var(--bg); color: var(--text); }
 .catalogue-results { margin: -6px 0 22px; padding: 8px; border: 1px solid var(--card-border); border-radius: var(--radius); background: var(--glass); backdrop-filter: blur(16px); box-shadow: var(--shadow); }
 .catalogue-results > p { margin: 10px 12px; font-size: 14px; line-height: 1.6; color: var(--muted); }
 .catalogue-result { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; min-height: 48px; padding: 12px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text); font: inherit; font-size: 14px; text-align: left; }
@@ -77,38 +77,27 @@
 .tile__label .replay-scoreline strong { padding: 3px 7px; font-size: 13px; }
 .provisional-label { color: var(--muted); font-size: 11px; line-height: 1.4; }
 
-.commentary-captions { margin-top: 18px; overflow: hidden; border: 1px solid var(--card-border); border-radius: var(--radius); background: var(--glass); box-shadow: var(--shadow); backdrop-filter: blur(18px); }
-.caption-controls { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; padding: 18px 22px; }
+.commentary-captions { overflow: hidden; border: 1px solid var(--card-border); border-radius: var(--radius); background: var(--glass); box-shadow: var(--shadow); backdrop-filter: blur(18px); }
+.caption-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 16px; }
 .caption-heading { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .caption-heading > svg { flex-shrink: 0; color: var(--accent); }
-.caption-heading h2 { margin: 0; color: var(--text); font-size: 16px; font-weight: 600; line-height: 1.4; letter-spacing: -.2px; }
-.caption-tools { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.caption-heading h2 { margin: 0; color: var(--text); font-size: 14px; font-weight: 600; line-height: 1.4; letter-spacing: -.2px; }
 .caption-toggle { display: inline-flex; align-items: center; gap: 9px; min-height: 40px; padding: 5px 0 5px 4px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: 13px; font-weight: 500; }
 .caption-switch { display: inline-flex; align-items: center; width: 34px; height: 20px; padding: 3px; border-radius: 20px; background: var(--soft); }
 .caption-switch i { display: block; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform 160ms ease; }
 .caption-toggle.is-on .caption-switch { background: var(--blue); }
 .caption-toggle.is-on .caption-switch i { transform: translateX(14px); }
-.caption-options { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; }
-.caption-options label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
-.caption-options select { max-width: 136px; min-height: 36px; padding: 7px 23px 7px 9px; border-radius: 9px; font-size: 12px; }
-.caption-panel { display: grid; align-content: center; min-height: 114px; padding: 20px 28px 24px; }
-.caption-text { color: var(--text); font-weight: 500; line-height: 1.55; text-align: center; white-space: pre-line; overflow-wrap: anywhere; }
-.caption-text--medium { font-size: clamp(19px, 2vw, 23px); }
-.caption-text--large { font-size: clamp(23px, 2.5vw, 29px); }
-.caption-text--extra-large { font-size: clamp(28px, 3vw, 36px); }
+.caption-panel { display: grid; align-content: center; min-height: 90px; padding: 14px 16px 18px; }
+.caption-text { color: var(--text); font-size: clamp(18px, 1.4vw, 20px); font-weight: 500; line-height: 1.55; text-align: center; white-space: pre-line; overflow-wrap: anywhere; }
 .caption-text:empty { display: none; }
 .caption-text--partial { font-style: italic; }
 .caption-status { margin: 0; padding: 4px 22px 16px; color: var(--muted); font-size: 13px; line-height: 1.65; }
 .caption-panel .caption-status { padding: 0; text-align: center; }
-.caption-provenance { margin: 0; padding: 0 22px 16px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.caption-provenance { margin: 0; padding: 0 16px 16px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .caption-provenance a { color: var(--accent); text-underline-offset: 3px; }
-.caption-overlay { position: absolute; z-index: 2; right: 4%; bottom: 17%; left: 4%; pointer-events: none; }
-.caption-overlay.has-caption { padding: 12px 18px; border-radius: 12px; background: rgba(5, 12, 26, .92); box-shadow: 0 4px 16px #0004; }
-.caption-overlay .caption-text { color: #fff; text-shadow: 0 1px 3px #0008; }
 
 @media (max-width: 1000px) {
   .news-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .caption-tools { gap: 14px; }
 }
 
 @media (max-width: 640px) {
@@ -125,14 +114,6 @@
   .news-grid { grid-template-columns: 1fr; gap: 16px; }
   .news-card-body { padding: 22px; }
   .publisher-attribution .freshness { margin-left: 0; }
-  .caption-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px 12px; padding: 16px; }
-  .caption-heading { grid-column: 1; grid-row: 1; }
-  .caption-tools { display: contents; }
-  .caption-options { display: grid; grid-column: 1 / -1; grid-row: 2; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; min-width: 0; }
-  .caption-options label { align-items: flex-start; flex-direction: column; gap: 5px; min-width: 0; font-size: 11px; }
-  .caption-options select { width: 100%; max-width: none; min-height: 40px; padding-right: 18px; }
-  .caption-toggle { grid-column: 2; grid-row: 1; }
-  .caption-panel { min-height: 105px; padding: 16px 20px 22px; }
   .caption-status { padding-inline: 16px; }
   .caption-provenance { padding-inline: 16px; }
 }

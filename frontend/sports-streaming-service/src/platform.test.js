@@ -219,19 +219,46 @@ test('captions use actual SOURCE seconds, preserve pause and clear immediately o
   container.remove();
 });
 
-test('captions show honest unavailable state, size/layout preferences and an accessible overlay', async () => {
+test('captions show honest unavailable state in the fixed panel without extra controls', async () => {
   fetch.mockImplementation(() => reply({ status: 'unavailable' }));
   const { ref, container } = mediaAt(120);
   render(<CommentaryCaptions feed={FEEDS[0]} mediaRef={ref} />);
   fireEvent.click(screen.getByRole('button', { name: /Commentary captions Off/ }));
   expect(await screen.findByText(/No commentary track has been generated/)).toBeInTheDocument();
-  fireEvent.change(screen.getByLabelText('Caption text size'), { target: { value: 'extra-large' } });
-  fireEvent.change(screen.getByLabelText('Caption position'), { target: { value: 'overlay' } });
-  expect(localStorage.getItem('matchpulse-captions-size')).toBe('extra-large');
-  expect(localStorage.getItem('matchpulse-captions-layout')).toBe('overlay');
-  expect(container.querySelector('[aria-live="polite"]')).toBeInTheDocument();
-  expect(document.querySelector('.caption-overlay')).not.toHaveClass('has-caption');
+  const captions = screen.getByRole('region', { name: 'Commentary captions' });
+  expect(within(captions).queryByRole('combobox')).not.toBeInTheDocument();
+  expect(within(captions).getByRole('status')).toHaveTextContent(/No commentary track has been generated/);
+  expect(container.querySelector('[aria-live]')).toBeNull();
   container.remove();
+});
+
+test('the fixed caption panel ignores obsolete preferences without reading, writing or creating an overlay', async () => {
+  localStorage.setItem('matchpulse-captions-size', 'medium');
+  localStorage.setItem('matchpulse-captions-layout', 'overlay');
+  localStorage.setItem('matchpulse-captions-enabled', 'true');
+  fetch.mockImplementation(() => reply(trackFor(FEEDS[0])));
+  const { ref, container } = mediaAt(120.5);
+  const reads = jest.spyOn(Storage.prototype, 'getItem');
+  const writes = jest.spyOn(Storage.prototype, 'setItem');
+  try {
+    render(<CommentaryCaptions feed={FEEDS[0]} mediaRef={ref} />);
+    const text = await screen.findByText('Test commentary at source 120.');
+    const captions = screen.getByRole('region', { name: 'Commentary captions' });
+    expect(captions).toContainElement(text);
+    expect(text).toHaveAttribute('aria-live', 'polite');
+    expect(text).toHaveAttribute('aria-atomic', 'true');
+    expect(within(captions).queryByRole('combobox')).not.toBeInTheDocument();
+    expect(container.querySelector('[aria-live]')).toBeNull();
+    fireEvent.click(within(captions).getByRole('button', { name: 'Commentary captions On' }));
+    expect(within(captions).getByRole('button', { name: 'Commentary captions Off' })).toHaveAttribute('aria-pressed', 'false');
+    expect(writes).toHaveBeenCalledWith('matchpulse-captions-enabled', 'false');
+    for (const key of ['matchpulse-captions-size', 'matchpulse-captions-layout']) {
+      expect(reads).not.toHaveBeenCalledWith(key);
+      expect(writes.mock.calls.filter(([writtenKey]) => writtenKey === key)).toHaveLength(0);
+    }
+  } finally {
+    reads.mockRestore(); writes.mockRestore(); container.remove();
+  }
 });
 
 test('caption visibility is keyboard operable and retained locally', async () => {

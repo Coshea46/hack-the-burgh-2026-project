@@ -3,7 +3,7 @@ import './App.css';
 import './Platform.css';
 import { FEEDS } from './feeds';
 import VideoTile from './components/VideoTile';
-import { Activity, Check, Moon, Pause, Play, Sun } from 'lucide-react';
+import { Activity, Moon, Pause, Play, Sun } from 'lucide-react';
 import MainPlayer from './components/MainPlayer';
 import { withViewTransition } from './viewTransition';
 import useBackendSocket from './useBackendSocket';
@@ -30,7 +30,6 @@ function App() {
   const [pendingMode, setPendingMode] = useState(null);
   const [modeNotice, setModeNotice] = useState('');
   const [activePage, setActivePage] = useState(pageFromHash);
-  const [selectionKind, setSelectionKind] = useState('initial');
   const [uiNow, setUiNow] = useState(Date.now());
   const [focusedId, setFocusedId] = useState(FEEDS[0].id);
   const [previewsPaused, setPreviewsPaused] = useState(false);
@@ -179,7 +178,6 @@ function App() {
     acknowledge(recommendation);
     if (recommendation.announce !== false) {
       setAnnouncement(`Switched to ${feed.label}`);
-      setSelectionKind('automatic');
     }
   }, [acknowledge]);
 
@@ -242,7 +240,6 @@ function App() {
     const feed = feedsRef.current.find((item) => item.id === id);
     if (!feed) return;
     holdRef.current = Date.now() + MANUAL_HOLD_MS;
-    setSelectionKind('manual');
     setHoldUntil(holdRef.current);
     const current = session.current;
     dirtyControls.current.select = !current || current.controls_enabled === false || !send.current({
@@ -303,7 +300,6 @@ function App() {
       const target = (firstSession && !dirtyControls.current.select ? selected : preserved)
         || preserved || selected || next.feeds.find((feed) => feed.healthy) || next.feeds[0];
       if (target.id !== pendingSelection.current?.id) switchTo(target.id, 'auto');
-      if (nextDirector && target.cameraId === next.current_match_id && nextDirector.selection_kind) setSelectionKind(nextDirector.selection_kind);
       if (dirtyControls.current.auto && next.controls_enabled !== false) {
         dirtyControls.current.auto = !send.current({ type: 'auto', session_id: next.session_id, enabled: autoRef.current });
       } else if (typeof next.auto_enabled === 'boolean') {
@@ -423,7 +419,7 @@ function App() {
       <a className="skip-link" href="#matches" onClick={(event) => { event.preventDefault(); document.getElementById('matches')?.focus(); }}>Skip to content</a>
       <header className="app-header">
         <a className="brand" href="#watch" onClick={(event) => { event.preventDefault(); navigate('watch'); }} aria-label="MatchPulse home">
-          <span className="brand-mark"><Activity size={29} aria-hidden="true" /></span><span>MatchPulse</span>
+          <span>MatchPulse</span>
         </a>
         <nav className="main-nav" aria-label="Main navigation">
           {[['watch', 'Watch'], ['tables', 'Tables'], ['news', 'News']].map(([id, label]) =>
@@ -439,27 +435,25 @@ function App() {
       </header>
       <main id="matches" className="app-content" tabIndex={-1} onKeyDown={onPlayerKey}>
         <section id="watch" className="player-layout" hidden={activePage !== 'watch'} aria-label="Watch matches">
-            <div className="player-heading"><div className="fixture-heading">
-              <h1 ref={headingRef} tabIndex={-1} style={{ viewTransitionName: 'match-heading' }}>{focused.label}</h1><ReplayScore feed={focused} mediaRef={mainVideo} /></div>
-              <div className="match-context"><span className="replay-badge">Prerecorded replay</span>
-              <span className={`selection-pill ${selectionKind === 'automatic' ? 'is-automatic' : ''}`}>
-                {selectionKind === 'automatic' ? <><Activity size={14} aria-hidden="true" /> MatchPulse selected</>
-                  : selectionKind === 'manual' ? <><Check size={14} aria-hidden="true" /> Your selection</> : 'Watching'}</span></div>
-            </div>
-          <DirectorPanel director={director} mode={mode} pendingMode={pendingMode} notice={modeNotice} onMode={requestMode}
-            enabled={autoSwitch} held={held} holdUntil={holdUntil} now={now} monitoring={monitoring} matchCount={feeds.length}
-            monitoredCount={feeds.filter((feed) => feed.healthy !== false).length} starting={inferenceBuffering}
-            connected={connection === 'connected'} connection={connection} canControl={sessionState?.controls_enabled !== false}
-            scoreFresh={scoreFresh} inferenceLabel={inferenceLabel} autoLabel={autoLabel} autoTitle={autoTitle} onToggle={toggleAuto} />
-          <div className="watch-stage"><div className="player-column">
+          <div className="player-heading"><div className="fixture-heading">
+            <h1 ref={headingRef} tabIndex={-1} style={{ viewTransitionName: 'match-heading' }}>{focused.label}</h1><ReplayScore feed={focused} mediaRef={mainVideo} />
+          </div></div>
+          <div className="watch-stage">
             <MainPlayer feed={focused} clock={clock} seekTo={seekTo} onPlayback={reportPlayback} mediaRef={mainVideo}
           inferenceBuffering={inferenceBuffering}
           onAvailability={(matchId, available) => {
             if (available) { unavailable.current.delete(matchId); finishRecommendation(); }
             else { unavailable.current.add(matchId); pendingAck.current = null; }
           }} />
-            <CommentaryCaptions feed={focused} mediaRef={mainVideo} live={captions.value} enabled={captions.enabled}
-              onToggle={captions.control} connected={connection === 'connected'} canControl={sessionState?.controls_enabled !== false} />
+            <div className="watch-sidebar">
+              <DirectorPanel director={director} mode={mode} pendingMode={pendingMode} notice={modeNotice} onMode={requestMode}
+              enabled={autoSwitch} held={held} holdUntil={holdUntil} now={now} monitoring={monitoring} matchCount={feeds.length}
+              monitoredCount={feeds.filter((feed) => feed.healthy !== false).length} starting={inferenceBuffering}
+              connected={connection === 'connected'} connection={connection} canControl={sessionState?.controls_enabled !== false}
+              scoreFresh={scoreFresh} inferenceLabel={inferenceLabel} autoLabel={autoLabel} autoTitle={autoTitle} onToggle={toggleAuto} />
+              <CommentaryCaptions feed={focused} mediaRef={mainVideo} live={captions.value} enabled={captions.enabled}
+                onToggle={captions.control} connected={connection === 'connected'} canControl={sessionState?.controls_enabled !== false} />
+            </div>
           </div>
           <aside className="alternatives" aria-label="Match selection">
         <div className="strip-toolbar"><h2>Other matches <span>{Math.max(0, feeds.length - 1)}</span></h2>
@@ -478,7 +472,7 @@ function App() {
           ))}
         </div>
         <p className="selection-help">{feeds.length === 1 ? 'No other matches in this replay.' : 'Choose a match to keep it for 30 seconds.'}</p>
-          </aside></div>
+          </aside>
         <p className="watch-disclosure">Replay footage. Scores are relative and experimental, not goal probabilities.</p>
         </section>
         <div id="tables" hidden={activePage !== 'tables'}><TablesPage active={activePage === 'tables'} /></div>

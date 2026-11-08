@@ -28,14 +28,31 @@ header contains the MatchPulse wordmark, three navigation links and a theme
 toggle. Connection and provider errors appear beside the affected controls or
 media rather than in a permanent navbar indicator.
 
-Watch leads with the main video, a compact Auto Director control, commentary
-captions and six alternative matches. There is no marketing hero. Tables puts
+Watch places the main video beside a compact sidebar on desktop, with commentary
+captions directly below Auto Director. Both panels stack below the video on mobile.
+Six alternative matches appear underneath the main row in a responsive grid.
+There are no replay/selection badges or caption size/position controls. There is
+no marketing hero. Tables puts
 league search and standings first; News uses a responsive article-card grid.
 The Moments and About frontend pages, navigation state and components are removed.
 Backend selection history and telemetry are preserved. Essential replay,
 experimental-model and machine-caption disclosures remain in context.
 
-### Redesign verification (2026-11-08)
+### Earlier Watch layout verification (2026-11-08)
+
+The focused layout update passed **128 frontend tests across seven suites**, the
+CI production build and application build lint. Regression coverage preserves
+manual/automatic switching, mounted media, caption alignment and On/Off behaviour;
+it also checks page order and that old caption size/layout preferences are unused.
+Edge inspection confirmed the desktop player/sidebar, three-column alternatives
+underneath and fixed captions after the grid. At 320 CSS pixels, Director controls
+stack below the video and alternatives use two columns without visible overflow.
+A real manual match change retained paused playback at **427.433 seconds**. The
+preview was left on Watch, paused, with captions On. Real GPU automatic switching
+and paid transcription were not rerun for this layout-only update; backend and
+Modal code are unchanged.
+
+### Earlier redesign verification (2026-11-08)
 
 The final frontend passed **126 tests across seven suites** and its CI production
 build. New regressions check the three-link navigation, safe redirects from old
@@ -178,8 +195,9 @@ blocks the director's two-second prediction cadence.
 
 Partials appear immediately, labelled as provisional; committed text replaces
 them. Committed word timestamps are provider times plus the exact source-audio
-anchor. Partials have no invented word times. The accessible panel has on/off,
-saved text size and panel/overlay preferences. Silence produces no invented text;
+anchor. Partials have no invented word times. The accessible panel has an On/Off
+control and a fixed sidebar panel with readable responsive text. Caption size
+and overlay preferences are no longer used. Silence produces no invented text;
 crowd noise can reduce recognition quality. This integration does not infer goals,
 speaker identities or crowd events that Realtime did not return. There is an
 unavoidable recognition delay after audible speech; the application does not

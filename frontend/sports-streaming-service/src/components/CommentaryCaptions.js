@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { Captions } from 'lucide-react';
 import { apiGet } from '../platformApi';
 import { getVideoUrl } from '../feeds';
@@ -7,17 +6,15 @@ import { captionAt, readCaptionTrack } from '../captions';
 import useSourcePlayback, { SOURCE_LOAD_EVENT } from '../useSourcePlayback';
 import { liveCaptionStatus } from '../liveCaptions';
 
-const preference = (key, fallback) => { try { return localStorage.getItem(`matchpulse-captions-${key}`) || fallback; } catch { return fallback; } };
+const enabledPreference = () => { try { return localStorage.getItem('matchpulse-captions-enabled') === 'true'; } catch { return false; } };
 export const CAPTION_READY_REFRESH_MS = 240000;
 export const CAPTION_MISSING_RETRY_MS = 30000;
 export const CAPTION_MIN_RETRY_MS = 5000;
 
 export default function CommentaryCaptions({ feed, mediaRef, live, enabled: controlledEnabled, onToggle, connected = true, canControl = true }) {
-  const [localEnabled, setEnabled] = useState(() => preference('enabled', 'false') === 'true');
+  const [localEnabled, setEnabled] = useState(enabledPreference);
   const enabled = controlledEnabled ?? localEnabled;
   const isLive = live !== undefined;
-  const [size, setSize] = useState(() => ['medium', 'large', 'extra-large'].includes(preference('size', 'large')) ? preference('size', 'large') : 'large');
-  const [layout, setLayout] = useState(() => preference('layout', 'panel') === 'overlay' ? 'overlay' : 'panel');
   const [result, setResult] = useState(null);
   const { cameraId, sourceKey, sourceIdentity } = feed;
   const source = `${getVideoUrl(feed)}\n${feed.cameraId}\n${feed.sourceKey || ''}\n${feed.sourceIdentity || ''}`;
@@ -25,10 +22,8 @@ export default function CommentaryCaptions({ feed, mediaRef, live, enabled: cont
   useEffect(() => {
     try {
       localStorage.setItem('matchpulse-captions-enabled', String(enabled));
-      localStorage.setItem('matchpulse-captions-size', size);
-      localStorage.setItem('matchpulse-captions-layout', layout);
     } catch {}
-  }, [enabled, size, layout]);
+  }, [enabled]);
   useEffect(() => {
     if (isLive || !enabled || !sourceKey) return undefined;
     let cancelled = false;
@@ -106,20 +101,14 @@ export default function CommentaryCaptions({ feed, mediaRef, live, enabled: cont
         : !track ? 'Captions unavailable. No commentary track has been generated for this source.'
         : time === null ? 'Captions follow the player when the source is ready.'
           : !text ? covered ? 'No commentary at this moment.' : 'No caption track covers this part of the replay.' : '';
-  const caption = <div className={`caption-text caption-text--${size} ${isLive && live?.state === 'partial' ? 'caption-text--partial' : ''}`} aria-live="polite" aria-atomic="true">{text}</div>;
-  const overlayTarget = enabled && layout === 'overlay' ? mediaRef.current?.parentElement : null;
+  const caption = <div className={`caption-text ${isLive && live?.state === 'partial' ? 'caption-text--partial' : ''}`} aria-live="polite" aria-atomic="true">{text}</div>;
   return <section className="commentary-captions" aria-label="Commentary captions">
     <div className="caption-controls"><div className="caption-heading"><Captions size={21} aria-hidden="true" /><h2>Commentary captions</h2></div>
-      <div className="caption-tools">{enabled && <div className="caption-options"><label>Text size<select aria-label="Caption text size" value={size} onChange={(event) => setSize(event.target.value)}><option value="medium">Medium</option><option value="large">Large</option><option value="extra-large">Extra large</option></select></label>
-        <label>Position<select aria-label="Caption position" value={layout} onChange={(event) => setLayout(event.target.value)}><option value="panel">Below player</option><option value="overlay">Over video</option></select></label></div>}
-        <button className={`caption-toggle ${enabled ? 'is-on' : ''}`} aria-label={`Commentary captions ${enabled ? 'On' : 'Off'}`} aria-pressed={enabled}
+      <button className={`caption-toggle ${enabled ? 'is-on' : ''}`} aria-label={`Commentary captions ${enabled ? 'On' : 'Off'}`} aria-pressed={enabled}
           onClick={() => { setEnabled(!enabled); onToggle?.(!enabled); }}><span className="caption-switch" aria-hidden="true"><i /></span><span>{enabled ? 'On' : 'Off'}</span></button>
-      </div>
     </div>
     {enabled && <>
-      {layout === 'panel' && <div className="caption-panel">{caption}{!text && status && <p className="caption-status" role="status">{status}</p>}</div>}
-      {overlayTarget && createPortal(<div className={`caption-overlay ${text ? 'has-caption' : ''}`}>{caption}</div>, overlayTarget)}
-      {layout === 'overlay' && !text && status && <p className="caption-status" role="status">{status}</p>}
+      <div className="caption-panel">{caption}{!text && status && <p className="caption-status" role="status">{status}</p>}</div>
       {isLive && <p className="caption-provenance">Automatic captions by <a href="https://elevenlabs.io/" target="_blank" rel="noreferrer">ElevenLabs</a>. Draft text may change. Not human reviewed.</p>}
       {!isLive && track && <p className="caption-provenance">Automatic captions by <a href="https://elevenlabs.io/" target="_blank" rel="noreferrer">ElevenLabs</a>.{track.provenance.reviewed === true ? ' Human reviewed.' : ' Not human reviewed.'}</p>}
     </>}

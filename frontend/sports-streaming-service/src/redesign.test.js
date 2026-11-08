@@ -43,6 +43,24 @@ test('the three navigation links have one active page and preserve every media e
   expect(screen.getByRole('region', { name: 'Other matches' })).toBeVisible();
 });
 
+test('Watch groups director and captions beside the player before alternatives, with no heading badges', () => {
+  render(<App />);
+  const watch = screen.getByRole('region', { name: 'Watch matches' });
+  const player = screen.getByLabelText(`${FEEDS[0].label} video`);
+  const director = within(watch).getByRole('complementary', { name: 'Auto Director settings' });
+  const alternatives = within(watch).getByRole('complementary', { name: 'Match selection' });
+  const captions = within(watch).getByRole('region', { name: 'Commentary captions' });
+  expect(player.compareDocumentPosition(director) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(director.compareDocumentPosition(captions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(captions.compareDocumentPosition(alternatives) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(director.parentElement).toBe(captions.parentElement);
+  for (const label of ['Prerecorded replay', 'Watching', 'Your selection', 'MatchPulse selected']) {
+    expect(within(watch).queryByText(label, { exact: true })).not.toBeInTheDocument();
+  }
+  expect(within(captions).queryByRole('combobox')).not.toBeInTheDocument();
+  expect(within(alternatives).getAllByRole('button')).toHaveLength(7);
+});
+
 test.each(['#moments', '#about', '#unknown'])('obsolete or unknown initial route %s safely opens Watch', (hash) => {
   window.history.replaceState(null, '', `/${hash}`);
   const { container } = render(<App />);
@@ -87,8 +105,7 @@ test('navigation, theme, preview and caption controls remain named and keyboard 
   expect(screen.getByRole('button', { name: 'Pause previews' })).toHaveAttribute('aria-pressed', 'false');
   const captions = screen.getByRole('region', { name: 'Commentary captions' });
   expect(within(captions).getByRole('button', { name: /Commentary captions On/ })).toHaveAttribute('aria-pressed', 'true');
-  expect(within(captions).getByRole('combobox', { name: 'Caption text size' })).toHaveValue('large');
-  expect(within(captions).getByRole('combobox', { name: 'Caption position' })).toHaveValue('panel');
+  expect(within(captions).queryByRole('combobox')).not.toBeInTheDocument();
   const theme = screen.getByRole('button', { name: 'Switch to dark mode' });
   theme.focus(); userEvent.keyboard('{Enter}');
   expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
