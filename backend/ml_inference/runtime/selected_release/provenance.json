@@ -1,0 +1,16 @@
+{
+  "release": "autonomous-v1/delivery-v1",
+  "selected_model": "temporal-run-v2",
+  "head": "shots3_10",
+  "checkpoint_sha256": "d63fff64480d00835c14bc7c726e062b00278126d517e1e9eceb1abe0aafbd1e",
+  "artifacts": {
+    "matchpulse-0.1.0+autonomous1-py3-none-any.whl": "3040593a8c23338d17a2d54ac5b76eed6be7df1ed6074386207f5a6010343291",
+    "selected_release/smoke-raw.npy": "1594ba24c971d5bb39b7e56ea64a7f011e9841c0eb5ef71cb4d538e380a4beda",
+    "selected_release/smoke-observation.json": "17428711a0ed59bc9841eba4124203ff5a4fcf4ec4afb52716b4035540ca9098",
+    "selected_release/smoke-verification.json": "1f1bb6011d1d7e6fe42e0f1e5f58d5bb76e668527f8076e2ad596ababcbe5f1f",
+    "selected_release/INTEGRATION.md": "cb3c6aee845c8c0b6beec91860d6a6e25c66a68e8842fc6d63c526d42e14661e",
+    "selected_release/PREDICTOR_INTEGRATION.md": "ab660719de3858b1819d3a044183b245fab2ace69b7361327c18d5d0c1c81d36",
+    "selected_release/delivery.json": "e9230e6835cb46f439b32e6002aead755231b1cdc648f51d3fa7f5c52bd89e08",
+    "selected_release/runtime-compatibility.json": "c7aea9922c91b12a2891957e4a898f9660ec8c7dba295d59ac30996b22ccb25c"
+  }
+}

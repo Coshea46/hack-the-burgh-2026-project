@@ -147,12 +147,104 @@ def test_source_configuration_offsets_and_bounded_registration():
 
 def test_monitoring_is_disabled_unless_server_environment_explicitly_enables_it():
     assert not SessionConfig.from_env({"MATCHPULSE_ML_MODE": "real"}).monitor
-    with pytest.raises(ValueError, match="explicit"):
-        SessionConfig.from_env({"MATCHPULSE_MONITOR": "true"})
-    with pytest.raises(ValueError, match="CHECKPOINT"):
-        SessionConfig.from_env({"MATCHPULSE_MONITOR": "true", "MATCHPULSE_ML_MODE": "real"})
+    assert SessionConfig.from_env({}).mode == "disabled"
     with pytest.raises(ValueError):
         SessionConfig.from_env({"MATCHPULSE_MONITOR": "true", "MATCHPULSE_ML_MODE": "mock"})
+    # Explicit Python configurations still cannot declare a real worker without
+    # specifying its artifact; only the environment factory supplies defaults.
+    with pytest.raises(ValueError, match="CHECKPOINT"):
+        SessionConfig(monitor=True, mode="real")
+
+
+@pytest.mark.parametrize("extra", [{}, {"MATCHPULSE_ML_MODE": "real"},
+                                   {"MATCHPULSE_ML_MODE": "", "MATCHPULSE_ML_CHECKPOINT": "",
+                                    "MATCHPULSE_MODEL_VERSION": ""}])
+def test_enabled_monitor_defaults_to_exact_selected_model_without_mock_fallback(extra):
+    from backend.ml_inference.model_release import NEW_MODEL_VERSION
+
+    config = SessionConfig.from_env({"MATCHPULSE_MONITOR": "true", **extra})
+    assert config.mode == "real" and config.monitor
+    assert config.model_version == config.checkpoint == NEW_MODEL_VERSION
+    assert config.director_mode == "balanced"
+    assert config.mock_scores is None
+
+
+def test_explicit_rollback_checkpoint_and_director_preference_are_preserved():
+    from backend.ml_inference.model_release import LEGACY_MODEL_VERSION
+
+    config = SessionConfig.from_env({"MATCHPULSE_MONITOR": "true",
+        "MATCHPULSE_ML_CHECKPOINT": LEGACY_MODEL_VERSION, "MATCHPULSE_DIRECTOR_MODE": "relaxed"})
+    assert config.mode == "real"
+    assert config.model_version == config.checkpoint == LEGACY_MODEL_VERSION
+    assert config.director_mode == "relaxed"
+
+
+def test_auto_default_activates_only_after_identity_valid_worker_readiness_and_stops_on_failure():
+    async def scenario():
+        bridge = FakeBridge()
+        session = await ReplaySession(registry(), config=configuration(), bridge=bridge,
+                                       session_id="session").initialize()
+        initial = session.connect("viewer")
+        assert initial["auto_requested"] is True
+        assert initial["auto_enabled"] is False and initial["auto_available"] is False
+        enable = {"type": "auto", "session_id": "session", "enabled": True}
+        assert session.receive("viewer", enable)["code"] == "auto_unavailable"
+        ready = scores()
+        ready.update(state="ready", scores=[])
+        assert not session.accept_snapshot({**ready, "model_version": "wrong-model"})
+        assert not session.snapshot()["auto_available"]
+        assert not session.accept_snapshot(ready)  # Readiness is valid without a fabricated score.
+        active = session.snapshot()
+        assert active["auto_available"] is True and active["auto_enabled"] is True
+        assert active["auto_requested"] is True
+        failure = {**scores(sequence=2), "state": "error", "reason": "checkpoint_unavailable"}
+        assert not session.accept_snapshot(failure)
+        failed = session.snapshot()
+        assert failed["auto_available"] is False and failed["auto_enabled"] is False
+        assert failed["auto_requested"] is True
+        assert session.receive("viewer", enable)["code"] == "auto_unavailable"
+        assert session.receive("viewer", {**enable, "enabled": False}) is None
+        assert session.snapshot()["auto_requested"] is False
+        assert not bridge.calls  # Readiness controls do not launch an SDK or GPU job.
+        await session.close()
+
+    asyncio.run(scenario())
+
+
+def test_explicit_auto_off_during_startup_survives_readiness_then_on_resumes():
+    async def scenario():
+        session = await ReplaySession(registry(), config=configuration(), bridge=FakeBridge(),
+                                       session_id="session").initialize()
+        session.connect("viewer")
+        toggle = {"type": "auto", "session_id": "session", "enabled": False}
+        assert session.receive("viewer", toggle) is None
+        assert session.snapshot()["auto_requested"] is False
+        ready = scores()
+        ready.update(state="ready", scores=[])
+        session.accept_snapshot(ready)
+        active = session.snapshot()
+        assert active["auto_available"] is True
+        assert active["auto_enabled"] is False and active["auto_requested"] is False
+        assert session.receive("viewer", {**toggle, "enabled": True}) is None
+        assert session.snapshot()["auto_enabled"] is True
+        assert session.snapshot()["auto_requested"] is True
+        await session.close()
+
+    asyncio.run(scenario())
+
+
+def test_disabled_session_accepts_auto_off_but_never_auto_on():
+    async def scenario():
+        session = await ReplaySession(registry(), config=SessionConfig()).initialize()
+        session.connect("viewer")
+        toggle = {"type": "auto", "session_id": session.session_id, "enabled": False}
+        assert not session.snapshot()["auto_available"]
+        assert session.receive("viewer", toggle) is None
+        assert session.receive("viewer", {**toggle, "enabled": True})["code"] == "auto_unavailable"
+        assert not session.snapshot()["auto_enabled"]
+        await session.close()
+
+    asyncio.run(scenario())
 
 
 def test_transport_defaults_to_private_websocket_without_importing_it_when_disabled(monkeypatch):

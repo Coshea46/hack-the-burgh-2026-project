@@ -1,6 +1,7 @@
 """Interchangeable mock and research portable-bundle adapters."""
 
 import hashlib
+import importlib
 import re
 from pathlib import Path
 from threading import Lock
@@ -9,6 +10,18 @@ from typing import Protocol
 import numpy as np
 
 from .config import SCHEMA_VERSION, finite_number
+from .model_release import (
+    CHECKPOINT_SHA256,
+    LEGACY_CHECKPOINT_SHA256,
+    LEGACY_MODEL_VERSION,
+    NEW_MODEL_VERSION,
+    PARAMETER_COUNT,
+    RELEASE_ROOT,
+    SELECTED_HEAD,
+    SMOKE_ATOL,
+    SOURCE_SHA256,
+    verify_release_support,
+)
 from .validation import validate_features, validate_match_id
 
 MAX_CHECKPOINT_BYTES = 64 * 1024 * 1024
@@ -36,6 +49,11 @@ def validate_replay_classifier(scorer, *, model_version=None):
     normalization semantics. This stricter replay gate leaves the legacy generic
     adapter's supported model architectures unchanged.
     """
+    if isinstance(scorer, SelectedTemporalScorer):
+        scorer.prepare()
+        if model_version is not None and model_version != scorer.model_version:
+            raise ValueError("Selected replay model version mismatch")
+        return dict(scorer.readiness)
     bundle_sha256 = checkpoint_sha256(scorer.path)
     scorer.prepare()
     classifier = scorer._classifier
@@ -146,6 +164,7 @@ class ResearchInterestScorer:
         self.device, self.loader = device, loader
         self._classifier = None
         self._lock = Lock()
+        self.audio_contract = "legacy-gru"
 
     def prepare(self):
         with self._lock:
@@ -170,7 +189,7 @@ class ResearchInterestScorer:
                 self._classifier = classifier
         return self
 
-    def predict_scores(self, features):
+    def predict_scores(self, features, *, endpoint_seconds=None, half=1):
         for match_id, value in features.items():
             validate_match_id(match_id)
             validate_features(value, missing_audio=False)
@@ -184,3 +203,133 @@ class ResearchInterestScorer:
         if scores.shape != (len(ids),):
             raise ValueError("Research classifier returned an invalid batch dimension")
         return validate_scores(dict(zip(ids, scores)), ids)
+
+
+class SelectedTemporalScorer:
+    """Exact released predictor, with immutable identity and a real readiness smoke.
+
+    Extraction repairs the v3 audio channels once. This adapter forwards the raw
+    observation unchanged; the release owns representation, normalization and GRU.
+    Temporal prediction has no history buffer or cross-match commit side effects.
+    """
+
+    audio_contract = "sampleclock-v3"
+
+    def __init__(self, checkpoint, *, model_version=NEW_MODEL_VERSION, device="cpu"):
+        if model_version != NEW_MODEL_VERSION:
+            raise ValueError("Unknown selected replay model version")
+        # The published SelectedPredictor constructs its temporal classifier on CPU.
+        # Keep that API unchanged; YOLO remains on the worker's GPU independently.
+        if device != "cpu":
+            raise ValueError("Released selected predictor requires CPU inference")
+        self.path = Path(checkpoint)
+        self.model_version = model_version
+        self._predictor = None
+        self._observation = None
+        self._lock = Lock()
+        self.readiness = None
+
+    def prepare(self):
+        with self._lock:
+            if self._predictor is not None:
+                return self
+            digest = checkpoint_sha256(self.path)
+            if digest != CHECKPOINT_SHA256:
+                raise ValueError("Selected checkpoint SHA256 mismatch")
+            observation, verification = verify_release_support()
+            from matchpulse.research.predictor import (
+                Observation,
+                load_selected_predictor,
+            )
+
+            for module_name, expected in SOURCE_SHA256.items():
+                module = importlib.import_module(module_name)
+                if checkpoint_sha256(module.__file__) != expected:
+                    raise ValueError("Selected runtime source SHA256 mismatch")
+            predictor = load_selected_predictor(
+                self.path.parent, expected_manifest_sha256=CHECKPOINT_SHA256,
+                head=SELECTED_HEAD, release_root=self.path.parent,
+            )
+            classifier = predictor.model
+            model = classifier.model
+            metadata = classifier.metadata
+            gru = getattr(model, "gru", None)
+            count = sum(parameter.numel() for parameter in model.parameters())
+            if (predictor.kind != "raw215" or classifier.selected_head != SELECTED_HEAD
+                    or count != PARAMETER_COUNT or model.training is not False
+                    or getattr(gru, "input_size", None) != 68
+                    or getattr(gru, "hidden_size", None) != 16
+                    or getattr(gru, "num_layers", None) != 1
+                    or getattr(gru, "batch_first", None) is not True
+                    or getattr(gru, "bidirectional", None) is not False):
+                raise ValueError("Selected temporal model architecture mismatch")
+            raw = np.load(RELEASE_ROOT / "smoke-raw.npy", allow_pickle=False)
+            validate_features(raw)
+            smoke_observation = Observation(
+                observation["match_id"], observation["half"],
+                observation["observation_end_seconds"], raw215=raw,
+            )
+            score = validate_scores({"smoke": predictor.predict(smoke_observation)}, ["smoke"])["smoke"]
+            expected = verification["expected_three_scores"][verification["head_order"].index(SELECTED_HEAD)]
+            difference = abs(score - expected)
+            if difference > SMOKE_ATOL:
+                raise ValueError("Selected release fixture score parity failed")
+            threshold = finite_number(classifier.threshold, "selected threshold")
+            if threshold > 1:
+                raise ValueError("Selected threshold must lie in [0,1]")
+            self.readiness = {
+                "schema": SCHEMA_VERSION, "input_shape": [75, 215], "audio_required": True,
+                "audio_contract": self.audio_contract, "model_input_size": 215,
+                "model_version": self.model_version, "bundle_sha256": digest,
+                "architecture": {"kind": "temporal_gru", "input_size": 68, "hidden_size": 16,
+                                 "num_layers": 1, "bidirectional": False, "heads": 3,
+                                 "parameter_count": count},
+                "selected_head": SELECTED_HEAD, "score_semantics": metadata["score_semantics"],
+                "source_sha256": dict(SOURCE_SHA256),
+                "normalization": {"version": "observed-frame-values-validity-bits",
+                                  "fitted_split": "train", "channels": 34},
+                "decision_threshold": threshold, "threshold_selection_split": "valid",
+                "smoke": {"passed": True, "expected_score": expected, "actual_score": score,
+                          "absolute_difference": difference, "atol": SMOKE_ATOL, "rtol": 0},
+            }
+            self._observation = Observation
+            self._predictor = predictor
+        return self
+
+    def predict_scores(self, features, *, endpoint_seconds=None, half=1):
+        if not isinstance(features, dict):
+            raise TypeError("Features must be a mapping of match IDs to observations")
+        for match_id, raw in features.items():
+            validate_match_id(match_id)
+            validate_features(raw)  # Explicit availability masks may contain legitimate gaps.
+        if not features:
+            return {}
+        endpoints = endpoint_seconds if isinstance(endpoint_seconds, dict) else {
+            match_id: endpoint_seconds for match_id in features
+        }
+        if set(endpoints) != set(features):
+            raise ValueError("Exact source endpoint per supplied observation required")
+        for endpoint in endpoints.values():
+            if finite_number(endpoint, "observation endpoint") < 5:
+                raise ValueError("Completed five-second observation endpoint required")
+        self.prepare()
+        with self._lock:
+            scores = {
+                match_id: self._predictor.predict(self._observation(
+                    match_id, half, endpoints[match_id], raw215=features[match_id],
+                )) for match_id in sorted(features)
+            }
+        return validate_scores(scores, features)
+
+
+def load_replay_scorer(checkpoint_path, *, model_version=NEW_MODEL_VERSION, device="cpu"):
+    """Choose one explicit audited version; never fall back after a load failure."""
+    if model_version == NEW_MODEL_VERSION:
+        return SelectedTemporalScorer(checkpoint_path, model_version=model_version, device=device).prepare()
+    if model_version == LEGACY_MODEL_VERSION:
+        if checkpoint_sha256(checkpoint_path) != LEGACY_CHECKPOINT_SHA256:
+            raise ValueError("Legacy rollback checkpoint SHA256 mismatch")
+        scorer = ResearchInterestScorer(checkpoint_path, device=device)
+        scorer.readiness = validate_replay_classifier(scorer, model_version=model_version)
+        return scorer
+    raise ValueError("Unsupported replay model version; select the release or explicit legacy rollback")

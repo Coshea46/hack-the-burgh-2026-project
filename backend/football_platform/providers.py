@@ -48,7 +48,7 @@ class JSONTransport:
         if provider not in bases or not path or path.startswith("/") or ".." in path:
             raise ProviderError()
         url = bases[provider] + path + ("?" + parse.urlencode(params) if params else "")
-        req = request.Request(url, headers={"Accept": "application/json", "User-Agent": "MatchPulse/1.0", **headers})
+        req = request.Request(url, headers={"Accept": "application/json", "User-Agent": "Touchline/1.0", **headers})
         try:
             with request.build_opener(_NoRedirect()).open(req, timeout=6) as response:
                 raw = response.read(self.MAX_BYTES + 1)

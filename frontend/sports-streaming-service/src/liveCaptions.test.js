@@ -194,7 +194,7 @@ test('an exhausted original budget remains visible after an explicit On request 
   fireEvent.click(screen.getByRole('button', { name: /Commentary captions Off/ }));
   receive(baseSession({ sequence: 2, captions: { ...off, user_enabled: true, status: 'stopped', reason: 'budget_deadline' } }));
   expect(screen.getByRole('button', { name: /Commentary captions On/ })).toBeInTheDocument();
-  expect(screen.getByText('The live caption demo limit has been reached.')).toBeInTheDocument();
+  expect(screen.getByText('Live caption session allowance has been reached.')).toBeInTheDocument();
   receive(baseSession({ sequence: 3, captions: { ...off, user_enabled: true, status: 'stopped', reason: 'budget_deadline' } }));
   expect(socket.sent.filter((item) => item.type === 'captions')).toEqual([{ type: 'captions', session_id: 'live-test', enabled: true }]);
 });
@@ -208,7 +208,7 @@ test.each([['missing_key', /operator needs to connect ElevenLabs/], ['auth_error
 });
 
 test.each([['connecting', null, /Connecting live commentary/], ['listening', null, /Listening to the focused match/], ['paused', null, /pause with the player/],
-  ['stopped', 'budget_deadline', /demo limit has been reached/], ['error', 'rate_limited', /temporarily limited/],
+  ['stopped', 'budget_deadline', /session allowance has been reached/], ['error', 'rate_limited', /temporarily limited/],
   ['unavailable', 'unknown_provider_status', /unavailable right now/], ['disabled', 'feature_disabled', /disabled for this demo/],
   ['error', 'auth_error', /operator to check Speech to Text access/],
   ['unavailable', 'provider_permission_speech_to_text_missing', /operator to check Speech to Text access/],

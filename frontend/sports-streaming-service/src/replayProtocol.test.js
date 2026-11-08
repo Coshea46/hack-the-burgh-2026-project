@@ -24,12 +24,51 @@ test('rejects duplicate identities, unsafe URLs and malformed session/timeline e
   [
     { protocol_version: 2 }, { session_id: '' }, { model_version: null }, { mode: 'unknown' },
     { sequence: 1.5 }, { server_time: NaN }, { playback: { position: -1 } },
+    { auto_available: 'true' }, { auto_available: 1 }, { auto_available: null },
     { playback: { position: 0, clock_epoch: -1 } },
     { matches: [source, source] }, { matches: [{ ...source, url: 'javascript:alert(1)' }] },
     { matches: [{ ...source, offset_seconds: '8' }] }, { matches: [] },
   ].forEach((extra) => expect(readSession(envelope(extra))).toBeNull());
   expect(readSession(envelope(), readSession(envelope()))).toBeNull();
   expect(readSession(envelope({ sequence: 2 }), readSession(envelope()))).not.toBeNull();
+});
+
+test('preserves explicit Auto readiness separately from requested and effective state', () => {
+  const waiting = readSession(envelope({ state: 'starting', auto_available: false,
+    auto_requested: true, auto_enabled: false }));
+  expect(waiting).toMatchObject({ auto_available: false, auto_requested: true, auto_enabled: false });
+  const running = readSession(envelope({ state: 'running', auto_available: true,
+    auto_requested: true, auto_enabled: true, sequence: 2 }), waiting);
+  expect(running).toMatchObject({ auto_available: true, auto_enabled: true });
+  expect(readSession(envelope())).not.toBeNull(); // Older active session envelopes remain compatible.
+});
+
+test('optional Auto request, start capability, ownership capability and startup fields accept only booleans', () => {
+  for (const field of ['auto_requested', 'auto_can_start', 'auto_starting', 'can_claim_control']) {
+    for (const value of [true, false]) {
+      expect(readSession(envelope({ [field]: value }))).toMatchObject({ [field]: value });
+    }
+    for (const value of [null, 0, 1, 'true', 'false', {}, []]) {
+      expect(readSession(envelope({ [field]: value }))).toBeNull();
+    }
+  }
+  expect(readSession(envelope())).not.toBeNull();
+  expect(readSession(envelope({ state: 'starting', auto_requested: true, auto_can_start: false,
+    auto_starting: true, auto_available: false, auto_enabled: false }))).toMatchObject({
+    auto_requested: true, auto_can_start: false, auto_starting: true, auto_available: false, auto_enabled: false,
+  });
+});
+
+test('requested startup cannot authorize a real recommendation before explicit model readiness', () => {
+  const pending = readSession(envelope({ state: 'starting', auto_requested: true,
+    auto_starting: true, auto_can_start: false, auto_available: false, auto_enabled: false }));
+  expect(validRecommendation(rec(), pending, { time: 12 }, 1000)).toBe(false);
+  expect(validRecommendation(rec({ selection_kind: 'fallback', selection_reason: 'unavailable_fallback' }),
+    pending, { time: 12, available: false, stalled: true }, 1000)).toBe(false);
+  const ready = readSession(envelope({ state: 'running', auto_requested: true,
+    auto_starting: false, auto_available: true, auto_enabled: true }));
+  expect(validRecommendation(rec(), ready, { time: 12 }, 1000)).toBe(true);
+  expect(validRecommendation(rec(), readSession(envelope()), { time: 12 }, 1000)).toBe(true);
 });
 
 test('accepts the completed observation behind the actual viewer clock only', () => {

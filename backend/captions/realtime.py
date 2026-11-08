@@ -8,17 +8,18 @@ from contextlib import suppress
 from pathlib import Path
 from threading import Condition, Thread
 
+from .events import MAX_CAPTION_EVENT_BYTES
+from .limits import DEFAULT_AUDIO_SECONDS, DEFAULT_COST_USD, validate_limits
 from .schema import canonical_json
 
 MAX_CONTROL_BYTES = 24576
-MAX_EVENT_BYTES = 65536
+MAX_EVENT_BYTES = MAX_CAPTION_EVENT_BYTES
 
 
 class RealtimeCaptionWorker:
-    def __init__(self, callback, *, python_executable=None, max_audio_seconds=30,
-                 max_cost_usd=.01, env=None, process_factory=subprocess.Popen):
-        if not 0 < max_audio_seconds <= 30 or not 0 < max_cost_usd <= .01:
-            raise ValueError("Live caption budget exceeds the authorized bounded trial")
+    def __init__(self, callback, *, python_executable=None, max_audio_seconds=DEFAULT_AUDIO_SECONDS,
+                 max_cost_usd=DEFAULT_COST_USD, env=None, process_factory=subprocess.Popen):
+        validate_limits(max_audio_seconds, max_cost_usd)
         self.callback = callback
         root = Path(__file__).resolve().parents[2]
         default = root / "backend" / ".venv-captions" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")

@@ -15,6 +15,14 @@ from time import perf_counter
 
 import numpy as np
 
+from .replay_audio import (
+    DECODER_SHA256,
+    LEGACY_AUDIO,
+    SAMPLECLOCK_AUDIO,
+    repair_v3_audio,
+    validate_aligned_pcm,
+    validate_audio_contract,
+)
 from .validation import validate_audio, validate_features, validate_match_id
 
 FPS = 15
@@ -32,6 +40,7 @@ class IncrementalResult:
 def fresh_reference_window(
     detector, frames, source_timestamps, audio, *, window_start_seconds,
     config=None, detector_config=None, extractor_factory=None, audio_features_fn=None,
+    audio_contract=LEGACY_AUDIO, core_audio_repair_fn=None,
 ):
     """Independent research assembly with actual PTS and fresh YOLO per window.
 
@@ -41,7 +50,8 @@ def fresh_reference_window(
     Keeping the selected pixels identical isolates feature-cache equivalence;
     a separate source-file decode comparison must verify the sampler itself.
     """
-    validate_audio(audio)
+    validate_audio_contract(audio_contract)
+    (validate_aligned_pcm if audio_contract == SAMPLECLOCK_AUDIO else validate_audio)(audio)
     frames, source_timestamps = list(frames), np.asarray(source_timestamps, np.float64)
     if len(frames) != WINDOW_SAMPLES or source_timestamps.shape != (WINDOW_SAMPLES,):
         raise ValueError("Reference requires exactly 75 frames and source timestamps")
@@ -83,12 +93,19 @@ def fresh_reference_window(
     timing["detector"] = perf_counter() - t
     features, diagnostics = fresh._assemble(frames, raw, times, timing)
     t = perf_counter()
-    features[:, 210:215] = audio_features_fn(audio, 16000, duration_seconds=5)
+    if audio_contract == SAMPLECLOCK_AUDIO:
+        features = (core_audio_repair_fn or repair_v3_audio)(
+            features, audio, endpoint_seconds=float(window_start_seconds) + 5,
+        )
+    else:
+        features[:, 210:215] = audio_features_fn(audio, 16000, duration_seconds=5)
     timing["audio"] = perf_counter() - t
-    validate_features(features, missing_audio=False)
+    validate_features(features, missing_audio=None if audio_contract == SAMPLECLOCK_AUDIO else False)
     timing["total"] = perf_counter() - started
     diagnostics.update(source_timestamps=times, detector_frames_inferred=75,
-                       detector_cache_hits=0, audio_available_intervals=75)
+                       detector_cache_hits=0,
+                       audio_available_intervals=int(features[:, 214].sum()),
+                       audio_contract=audio_contract)
     return IncrementalResult(features, timing, diagnostics)
 
 
@@ -143,6 +160,7 @@ class IncrementalMatchFeatures:
         source_epoch="0", timeline_origin_seconds=0.0,
         max_cache_bytes=64 * 1024 * 1024,
         extractor_factory=None, analyzer_factory=None, audio_features_fn=None,
+        audio_contract=LEGACY_AUDIO, core_audio_repair_fn=None,
     ):
         validate_match_id(match_id)
         validate_match_id(source_epoch, "source_epoch")
@@ -173,6 +191,8 @@ class IncrementalMatchFeatures:
             from matchpulse.features.audio import audio_features
 
             audio_features_fn = audio_features
+        self.audio_contract = validate_audio_contract(audio_contract)
+        self._repair_audio = core_audio_repair_fn or repair_v3_audio
         self.match_id, self.source_epoch = match_id, source_epoch
         self.timeline_origin_seconds = float(timeline_origin_seconds)
         self.config, self.detector = config, detector
@@ -316,7 +336,7 @@ class IncrementalMatchFeatures:
 
     def assemble(self, window_end_index, audio):
         """Build full raw (75,215) features from the completed source-timed window."""
-        validate_audio(audio)
+        (validate_aligned_pcm if self.audio_contract == SAMPLECLOCK_AUDIO else validate_audio)(audio)
         end = _index(window_end_index, "window_end_index")
         with self._lock:
             if self._failed:
@@ -329,10 +349,16 @@ class IncrementalMatchFeatures:
             started = perf_counter()
             observations = [item[0] for item in self._observations.values()]
             audio_start = perf_counter()
-            audio_values = self._audio_features(audio, 16000, duration_seconds=5)
+            audio_values = (np.zeros((75, 5), np.float32) if self.audio_contract == SAMPLECLOCK_AUDIO
+                            else self._audio_features(audio, 16000, duration_seconds=5))
             audio_seconds = perf_counter() - audio_start
             features = self._extractor.assemble_observations(observations, audio=audio_values)
-            validate_features(features, missing_audio=False)
+            if self.audio_contract == SAMPLECLOCK_AUDIO:
+                audio_start = perf_counter()
+                features = self._repair_audio(features, audio,
+                    endpoint_seconds=self.timeline_origin_seconds + end / FPS)
+                audio_seconds += perf_counter() - audio_start
+            validate_features(features, missing_audio=None if self.audio_contract == SAMPLECLOCK_AUDIO else False)
             research = self._extractor.last_result
             timings = dict(research.timings)
             for key in ("detector", "pitch_team", "camera"):
@@ -354,6 +380,9 @@ class IncrementalMatchFeatures:
                 source_end_seconds=self.timeline_origin_seconds + end / FPS,
                 detector_frames_inferred=new_samples, detector_cache_hits=hits,
                 observation_cache_hits=hits, cache=self.stats,
+                audio_contract=self.audio_contract,
+                audio_decoder_sha256=DECODER_SHA256 if self.audio_contract == SAMPLECLOCK_AUDIO else None,
+                audio_available_intervals=int(features[:, 214].sum()),
             )
             self.last_result = IncrementalResult(features, timings, diagnostics)
             self._last_window_end = end

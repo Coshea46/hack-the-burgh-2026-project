@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.ml_inference import replay_client
+from backend.ml_inference.model_release import LEGACY_MODEL_VERSION, NEW_MODEL_VERSION
 from backend.ml_inference.replay_client import OwnedReplayHandles, ReplayClient
 from backend.ml_inference.tests.test_worker_definition import load_app
 
@@ -198,17 +199,14 @@ def test_replay_worker_missing_bundle_publishes_only_sanitized_error(monkeypatch
     store.values["control:owned-session"] = {"clock_epoch": 4}
     module.modal.Dict = SimpleNamespace(from_name=lambda *a, **kw: store)
 
-    class MissingBundle:
-        def __init__(self, *args, **kwargs):
-            pass
+    def missing_bundle(target, *, model_version, device):
+        assert model_version == NEW_MODEL_VERSION and device == 'cpu'
+        raise FileNotFoundError("https://private.example/video?token=never-publish-this")
 
-        def prepare(self):
-            raise FileNotFoundError("https://private.example/video?token=never-publish-this")
-
-    monkeypatch.setattr("backend.ml_inference.classifiers.ResearchInterestScorer", MissingBundle)
+    monkeypatch.setattr("backend.ml_inference.classifiers.load_replay_scorer", missing_bundle)
     worker = module.ReplayWorker()
     worker.classifiers = {}
-    result = worker.run(session(mode="real", model_version="gru-v1", checkpoint="v1/classifier.pt"))
+    result = worker.run(session(mode="real", model_version=NEW_MODEL_VERSION, checkpoint=NEW_MODEL_VERSION))
     assert result["state"] == "error" and result["reason"] == "checkpoint_unavailable"
     assert result["score_kind"] == "model" and result["error_type"] == "FileNotFoundError"
     assert result['error_phase'] == 'load' and result['error_code'] == 'checkpoint_load_failed'
@@ -218,6 +216,7 @@ def test_replay_worker_missing_bundle_publishes_only_sanitized_error(monkeypatch
 
 
 def test_gpu_checkpoint_mount_resolution_matches_cpu_and_preserves_escape_guard(monkeypatch, tmp_path):
+    from backend.ml_inference.classifiers import validate_replay_classifier
     from backend.ml_inference.tests.test_classifiers import replay_fixture
 
     module, _, _ = load_app(monkeypatch)
@@ -225,6 +224,7 @@ def test_gpu_checkpoint_mount_resolution_matches_cpu_and_preserves_escape_guard(
     bundle_root = storage_root / 'v1'
     bundle_root.mkdir(parents=True)
     scorer, _ = replay_fixture(bundle_root)
+    scorer.readiness = validate_replay_classifier(scorer, model_version=LEGACY_MODEL_VERSION)
     loaded, reloaded = [], []
 
     class MountedPath:
@@ -246,15 +246,15 @@ def test_gpu_checkpoint_mount_resolution_matches_cpu_and_preserves_escape_guard(
     monkeypatch.setattr(module, 'Path', lambda value: mount if value == '/models' else Path(value))
     monkeypatch.setattr(module.models, 'reload', lambda: reloaded.append(True))
 
-    def loader(target, *, device):
-        assert target == scorer.path.resolve() and device == 'cpu'
+    def loader(target, *, model_version, device):
+        assert target == scorer.path.resolve() and device == 'cpu' and model_version == LEGACY_MODEL_VERSION
         loaded.append(target)
         return scorer
 
-    monkeypatch.setattr('backend.ml_inference.classifiers.ResearchInterestScorer', loader)
+    monkeypatch.setattr('backend.ml_inference.classifiers.load_replay_scorer', loader)
     worker = module.ReplayWorker()
     worker.classifiers = {}
-    spec = session(mode='real', model_version='gru-stage1-valid', checkpoint='v1/classifier.pt')
+    spec = session(mode='real', model_version=LEGACY_MODEL_VERSION, checkpoint='v1/classifier.pt')
     assert worker._scorer(spec) is scorer
     assert worker._scorer(spec) is scorer  # Cached immutable version is loaded once.
     assert loaded == [scorer.path.resolve()] and reloaded == [True]
@@ -335,6 +335,25 @@ def test_default_partition_is_balanced_bounded_and_has_no_independent_parameter_
         assert 'shard_id' not in specs[0]
     client.stop('owned-session', owned)
     assert sdk.cancelled == list(range(len(groups))) and not store.values
+
+
+@pytest.mark.parametrize('workers,budgets', [(1, [10]), (4, [5, 5, 5, 5])])
+def test_larger_parent_budget_keeps_child_wire_compatible_with_deployed_workers(monkeypatch, workers, budgets):
+    sdk, store, _, specs, _ = sdk_fixture(monkeypatch)
+    client = ReplayClient(sdk=sdk)
+    client.update_control('owned-session', control())
+    configured = multi_session(gpu_workers=workers, max_estimated_cost_usd=20, max_duration_seconds=3600)
+    original = copy.deepcopy(configured)
+
+    owned = client.start(configured)
+
+    assert [spec['max_estimated_cost_usd'] for spec in specs] == budgets
+    assert all(spec['max_estimated_cost_usd'] <= 10 for spec in specs)
+    assert sum(spec['max_estimated_cost_usd'] for spec in specs) <= configured['max_estimated_cost_usd']
+    assert configured == original
+    assert len(owned.handles) == workers
+    client.stop('owned-session', owned)
+    assert sdk.cancelled == list(range(workers)) and not store.values
 
 
 def test_explicit_three_workers_balance_seven_sources_without_dropping_a_shard(monkeypatch):

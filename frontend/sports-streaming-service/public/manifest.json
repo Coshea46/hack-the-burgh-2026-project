@@ -1,9 +1,9 @@
 {
-  "short_name": "MatchPulse",
-  "name": "MatchPulse",
+  "short_name": "Touchline",
+  "name": "Touchline",
   "icons": [
     {
-      "src": "matchpulse.svg",
+      "src": "touchline.svg",
       "sizes": "any",
       "type": "image/svg+xml"
     }

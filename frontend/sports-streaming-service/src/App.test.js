@@ -12,7 +12,9 @@ function ready(video) {
   fireEvent.canPlay(video);
 }
 
-test('opens one S3 main player and six visible lightweight previews', () => {
+const nativePlayer = (id) => document.querySelector(`[data-feed-id="${id}"] video`);
+
+test('opens seven full-source players with one focused and six selectable previews', () => {
   render(<App />);
   const main = screen.getByLabelText(`${FEEDS[0].label} video`);
   expect(main).toHaveAttribute('src', getVideoUrl(FEEDS[0]));
@@ -21,23 +23,25 @@ test('opens one S3 main player and six visible lightweight previews', () => {
   expect(within(strip).getAllByRole('button')).toHaveLength(6);
   expect(strip.querySelectorAll('video')).toHaveLength(7);
   strip.querySelectorAll('video').forEach((video, i) => {
-    expect(video).toHaveAttribute('src', getPreviewUrl(FEEDS[i]));
-    expect(video.getAttribute('src')).not.toBe(getVideoUrl(FEEDS[i]));
+    expect(video).toHaveAttribute('src', getVideoUrl(FEEDS[i]));
   });
   expect(getVideoUrl(FEEDS[0])).toMatch(/\/match-1\.mp4$/);
   expect(getPreviewUrl(FEEDS[6])).toMatch(/\/match-7-preview-v1\.mp4$/);
 });
 
-test('switching preserves every video DOM node and the shared-source main timestamp', () => {
+test('switching promotes the existing destination video without replacing any player', () => {
   const { container } = render(<App />);
   const main = screen.getByLabelText(`${FEEDS[0].label} video`);
   ready(main);
   main.currentTime = 125;
   fireEvent.timeUpdate(main);
+  const destination = container.querySelector('[data-feed-id="3"] video');
+  ready(destination);
   const videos = Array.from(container.querySelectorAll('video'));
   fireEvent.click(screen.getByRole('button', { name: FEEDS[2].label }));
-  expect(screen.getByLabelText(`${FEEDS[2].label} video`)).toBe(main);
-  expect(main.currentTime).toBe(125);
+  expect(screen.getByLabelText(`${FEEDS[2].label} video`)).toBe(destination);
+  expect(destination).not.toBe(main);
+  expect(destination.currentTime).toBe(125);
   Array.from(container.querySelectorAll('video')).forEach((video, index) => expect(video).toBe(videos[index]));
   expect(screen.getByRole('button', { name: FEEDS[0].label })).toBeInTheDocument();
   expect(screen.getByRole('heading', { name: FEEDS[2].label })).toHaveFocus();
@@ -68,6 +72,73 @@ test('a genuinely different main source restores timeline, pause, rate and volum
   play.mockRestore();
 });
 
+test('audio ownership changes mute without resetting playback or the user preference', () => {
+  const clock = { current: { time: 29, playing: true, rate: 1.25, muted: false, volume: .4 } };
+  const feed = { id: 1, cameraId: 'cam-1', label: 'First', mainKey: 'first.mp4', offsetSeconds: 120 };
+  const { rerender } = render(<MainPlayer feed={feed} clock={clock} audioAllowed />);
+  const video = screen.getByLabelText('First video');
+  ready(video);
+  const source = video.getAttribute('src');
+  const play = jest.spyOn(video, 'play');
+  const pause = jest.spyOn(video, 'pause');
+  play.mockClear(); pause.mockClear();
+  rerender(<MainPlayer feed={feed} clock={clock} audioAllowed={false} />);
+  fireEvent.volumeChange(video);
+  expect(video.muted).toBe(true);
+  expect(clock.current.muted).toBe(false);
+  expect(video.currentTime).toBe(149);
+  expect(video.playbackRate).toBe(1.25);
+  expect(video.getAttribute('src')).toBe(source);
+  rerender(<MainPlayer feed={feed} clock={clock} audioAllowed />);
+  expect(video.muted).toBe(false);
+  expect(video.currentTime).toBe(149);
+  expect(play).not.toHaveBeenCalled();
+  expect(pause).not.toHaveBeenCalled();
+  play.mockRestore(); pause.mockRestore();
+});
+
+test('a changed source resumes from its first decoded frame without requiring canplay', () => {
+  const clock = { current: { time: 29.015997, playing: true, rate: 1, muted: false, volume: .4 } };
+  const availability = jest.fn();
+  const first = { id: 1, cameraId: 'cam-1', label: 'First', mainKey: 'first.mp4', offsetSeconds: 120 };
+  const second = { id: 2, cameraId: 'cam-2', label: 'Second', mainKey: 'second.mp4', offsetSeconds: 120 };
+  const { rerender } = render(<MainPlayer feed={first} clock={clock} onAvailability={availability} />);
+  const video = screen.getByLabelText('First video');
+  ready(video);
+  const play = jest.spyOn(video, 'play');
+  play.mockClear();
+  availability.mockClear();
+  rerender(<MainPlayer feed={second} clock={clock} onAvailability={availability} />);
+  video.currentTime = 0; // The browser resets its native clock for the new resource.
+  Object.defineProperty(video, 'readyState', { configurable: true, value: 1 });
+  fireEvent.loadedMetadata(video);
+  expect(video.currentTime).toBeCloseTo(149.015997, 6);
+  expect(clock.current.time).toBeCloseTo(29.015997, 6);
+  expect(screen.getByText('Loading match...')).toBeInTheDocument();
+  expect(play).not.toHaveBeenCalled();
+
+  Object.defineProperty(video, 'readyState', { configurable: true, value: 2 });
+  Object.defineProperty(video, 'seeking', { configurable: true, value: true });
+  fireEvent.loadedData(video);
+  expect(screen.getByText('Loading match...')).toBeInTheDocument();
+  expect(availability).not.toHaveBeenCalled();
+  Object.defineProperty(video, 'seeking', { configurable: true, value: false });
+  Object.defineProperty(video, 'readyState', { configurable: true, value: 1 });
+  fireEvent.loadedData(video);
+  expect(play).not.toHaveBeenCalled();
+  expect(availability).not.toHaveBeenCalled();
+
+  Object.defineProperty(video, 'readyState', { configurable: true, value: 2 });
+  fireEvent.loadedData(video); // No canplay or seeked event is required.
+  expect(screen.queryByText('Loading match...')).not.toBeInTheDocument();
+  expect(availability).toHaveBeenLastCalledWith('cam-2', true);
+  expect(video.matchpulseReadySource).toBe(`${getVideoUrl(second)}\ncam-2`);
+  expect(video.currentTime).toBeCloseTo(149.015997, 6);
+  expect(clock.current.stalled).toBe(false);
+  expect(play).toHaveBeenCalledTimes(1);
+  play.mockRestore();
+});
+
 test('Space and scoped number shortcuts continue to select matches', () => {
   render(<App />);
   fireEvent.keyDown(window, { key: '4' });
@@ -81,16 +152,24 @@ test('Space and scoped number shortcuts continue to select matches', () => {
 });
 
 test('pause previews never pauses the main element, and selection keeps previews paused', () => {
-  const pause = jest.spyOn(window.HTMLMediaElement.prototype, 'pause');
-  render(<App />);
+  const pause = jest.spyOn(window.HTMLMediaElement.prototype, 'pause').mockImplementation(function stop() {
+    Object.defineProperty(this, 'paused', { configurable: true, value: true });
+  });
+  const { container } = render(<App />);
   const main = screen.getByLabelText(`${FEEDS[0].label} video`);
+  const previews = Array.from(container.querySelectorAll('.tile--preview video'));
+  container.querySelectorAll('video').forEach((video) => {
+    ready(video);
+    Object.defineProperty(video, 'paused', { configurable: true, value: false });
+  });
   pause.mockClear();
   fireEvent.click(screen.getByRole('button', { name: 'Pause previews' }));
-  expect(pause).toHaveBeenCalledTimes(7);
+  expect(new Set(pause.mock.instances)).toEqual(new Set(previews));
   expect(pause.mock.instances).not.toContain(main);
+  pause.mockClear();
   fireEvent.click(screen.getByRole('button', { name: FEEDS[2].label }));
   expect(screen.getByRole('button', { name: 'Resume previews' })).toHaveAttribute('aria-pressed', 'true');
-  expect(pause.mock.instances).not.toContain(main);
+  expect(pause.mock.instances).not.toContain(screen.getByLabelText(`${FEEDS[2].label} video`));
   pause.mockRestore();
 });
 
@@ -121,17 +200,20 @@ test('light is the default and saved dark mode persists without replacing media 
   expect(document.documentElement).toHaveAttribute('data-theme', 'light');
 });
 
-test('main failures expose retry; a missing preview falls back to the full video once', () => {
+test('main failures expose retry and background full-source failures are visible', () => {
   const { container } = render(<App />);
   fireEvent.error(screen.getByLabelText(`${FEEDS[0].label} video`));
   expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   const preview = container.querySelector('[data-feed-id="2"] video');
-  expect(preview).toHaveAttribute('src', getPreviewUrl(FEEDS[1]));
-  fireEvent.error(preview);
   expect(preview).toHaveAttribute('src', getVideoUrl(FEEDS[1]));
-  expect(screen.queryByText('Preview unavailable')).not.toBeInTheDocument();
   fireEvent.error(preview);
-  expect(screen.getByText('Preview unavailable')).toBeInTheDocument();
+  expect(screen.getByText('Match unavailable')).toBeInTheDocument();
+  const load = jest.spyOn(preview, 'load').mockImplementation(() => {});
+  fireEvent.click(within(preview.closest('.tile')).getByRole('button', { name: 'Retry' }));
+  expect(load).toHaveBeenCalledTimes(1);
+  expect(preview).toHaveAttribute('src', getVideoUrl(FEEDS[1]));
+  expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBeInTheDocument();
+  load.mockRestore();
 });
 
 test('seek targets remain within the destination duration', () => {
@@ -190,10 +272,11 @@ describe('backend WebSocket', () => {
     emitted_at: Date.now() / 1000, valid_until: Date.now() / 1000 + 3,
     scores: Object.fromEntries(FEEDS.map((feed) => [feed.cameraId, feed.id === 3 ? 0.8 : 0.1])), latency_seconds: 0.2, ...overrides,
   });
-  const join = (overrides) => {
+  const join = (overrides, prewarm = true) => {
     act(() => socket().open());
     send(session(overrides));
-    ready(screen.getByLabelText(`${FEEDS[0].label} video`));
+    if (prewarm) document.querySelectorAll('.persistent-player video').forEach(ready);
+    else ready(screen.getByLabelText(`${FEEDS[0].label} video`));
   };
 
   test('maps backend feed names to matches', () => {
@@ -206,11 +289,102 @@ describe('backend WebSocket', () => {
 
   test('connects to the backend and keeps factual monitoring state beside the director', () => {
     render(<App />);
-    expect(socket().url).toBe('ws://localhost:8000');
+    expect(socket().url).toBe('ws://127.0.0.1:8030');
     expect(within(screen.getByRole('banner')).queryByText(/^(Connecting|Connected|Offline)$/)).not.toBeInTheDocument();
     join();
     expect(within(screen.getByRole('complementary', { name: 'Auto Director settings' }))
       .getByText('Monitoring 7 matches')).toBeInTheDocument();
+  });
+
+  test('Auto is unavailable before a ready session while manual playback remains usable', () => {
+    render(<App />);
+    const auto = screen.getByRole('button', { name: 'Auto unavailable' });
+    expect(auto).toBeDisabled();
+    expect(auto).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(auto);
+    expect(socket().sent.filter((message) => message.type === 'auto')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: FEEDS[1].label }));
+    expect(screen.getByLabelText(`${FEEDS[1].label} video`)).toBeInTheDocument();
+  });
+
+  test('finite monitoring expiry keeps the website connected and manual playback available', () => {
+    render(<App />);
+    join();
+    const video = screen.getByLabelText(`${FEEDS[0].label} video`);
+    const before = video.currentTime;
+    send(session({ sequence: 2, state: 'stopped', auto_available: false, auto_enabled: false,
+      error_code: 'session_limit_reached' }));
+    expect(screen.getByText('Monitoring session ended')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Auto unavailable' })).toBeDisabled();
+    expect(screen.queryByText(/Director offline/)).not.toBeInTheDocument();
+    expect(socket().readyState).toBe(1);
+    expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBe(video);
+    expect(video.currentTime).toBe(before);
+    fireEvent.click(screen.getByRole('button', { name: FEEDS[1].label }));
+    expect(screen.getByLabelText(`${FEEDS[1].label} video`)).toBe(nativePlayer(2));
+    expect(nativePlayer(2)).not.toBe(video);
+    expect(socket().sent.some((message) => message.type === 'select' && message.match_id === 'cam-2')).toBe(true);
+  });
+
+  test('the selected real model becomes Auto On only after readiness without changing the player', () => {
+    const model = 'temporal-shots3_10-d63fff64480d/classifier.pt';
+    const { container } = render(<App />);
+    join({ mode: 'real', model_version: model, state: 'starting', auto_available: false,
+      auto_requested: true, auto_enabled: false });
+    const video = screen.getByLabelText(`${FEEDS[0].label} video`);
+    const media = Array.from(container.querySelectorAll('video'));
+    expect(screen.getByRole('button', { name: 'Auto unavailable' })).toBeDisabled();
+    send(session({ mode: 'real', model_version: model, sequence: 2, state: 'running',
+      auto_available: true, auto_requested: true, auto_enabled: true }));
+    expect(screen.getByRole('button', { name: 'Auto' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Auto' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('combobox', { name: 'Director mode' })).toHaveValue('balanced');
+    expect(screen.getByText('Monitoring 7 matches')).toHaveAttribute('title', `Active model: ${model}`);
+    expect(video.currentTime).toBe(100);
+    expect(Array.from(container.querySelectorAll('video'))).toEqual(media);
+    expect(socket().sent.filter((message) => message.type === 'auto')).toHaveLength(0);
+    send(recommend({ sequence: 3, model_version: model, score_kind: 'model' }));
+    expect(screen.getByLabelText(`${FEEDS[2].label} video`)).toBe(nativePlayer(3));
+    expect(nativePlayer(3)).not.toBe(video);
+    expect(socket().sent).toContainEqual(expect.objectContaining({ type: 'ack', sequence: 3, match_id: 'cam-3' }));
+  });
+
+  test('an explicit unavailable model overrides active-state compatibility and never applies scores', () => {
+    render(<App />);
+    join({ state: 'running', auto_available: false, auto_enabled: false, auto_requested: true });
+    expect(screen.getByRole('button', { name: 'Auto unavailable' })).toBeDisabled();
+    send(recommend());
+    expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBeInTheDocument();
+    expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
+  });
+
+  test('an acknowledged Auto Off survives readiness updates and On resumes using fresh scores', () => {
+    render(<App />);
+    join({ auto_available: true, auto_requested: true, auto_enabled: true });
+    const video = screen.getByLabelText(`${FEEDS[0].label} video`);
+    fireEvent.click(screen.getByRole('button', { name: 'Auto' }));
+    expect(socket().sent).toContainEqual({ type: 'auto', session_id: 'replay-1', enabled: false });
+    send(session({ sequence: 2, auto_available: true, auto_requested: false, auto_enabled: false }));
+    expect(screen.getByRole('button', { name: 'Auto off' })).toHaveAttribute('aria-pressed', 'false');
+    send(recommend({ sequence: 3 }));
+    expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBe(video);
+    fireEvent.click(screen.getByRole('button', { name: 'Auto off' }));
+    expect(socket().sent).toContainEqual({ type: 'auto', session_id: 'replay-1', enabled: true });
+    send(session({ sequence: 4, auto_available: true, auto_requested: true, auto_enabled: true }));
+    send(recommend({ sequence: 5 }));
+    expect(screen.getByLabelText(`${FEEDS[2].label} video`)).toBe(nativePlayer(3));
+    expect(nativePlayer(3).currentTime).toBe(100);
+  });
+
+  test('losing the backend disables Auto without blocking a manual source change', () => {
+    render(<App />);
+    join(); // An older active envelope without auto_available retains compatibility.
+    expect(screen.getByRole('button', { name: 'Auto' })).toHaveAttribute('aria-pressed', 'true');
+    act(() => socket().drop());
+    expect(screen.getByRole('button', { name: 'Auto unavailable' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Auto unavailable' })).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(screen.getByRole('button', { name: FEEDS[1].label }));
+    expect(screen.getByLabelText(`${FEEDS[1].label} video`)).toBeInTheDocument();
   });
 
   test('a fresh recommendation changes the main match without stealing focus', () => {
@@ -222,12 +396,45 @@ describe('backend WebSocket', () => {
     expect(screen.getByLabelText(`${FEEDS[2].label} video`)).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: FEEDS[2].label })).not.toHaveFocus();
     expect(toggle).toHaveFocus();
-    expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
-    ready(screen.getByLabelText(`${FEEDS[2].label} video`));
+    expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(1);
     expect(screen.getByText(`Switched to ${FEEDS[2].label}`)).toBeInTheDocument();
     expect(screen.getByText('Mock scores')).toBeInTheDocument();
     expect(socket().sent).toContainEqual(expect.objectContaining({ type: 'ack', session_id: 'replay-1', sequence: 2,
       clock_epoch: 0, match_id: 'cam-3', received_at: expect.any(Number) }));
+    expect(socket().sent.at(-1)).toMatchObject({ type: 'playback', match_id: 'cam-3', position: 100 });
+  });
+
+  test('cold automatic proposals are discarded and only a fresh ready proposal can switch and ACK', () => {
+    render(<App />);
+    join(undefined, false);
+    const video = screen.getByLabelText(`${FEEDS[0].label} video`);
+    const destination = nativePlayer(3);
+    send(recommend());
+    expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBe(video);
+    Object.defineProperty(destination, 'readyState', { configurable: true, value: 1 });
+    Object.defineProperty(destination, 'duration', { configurable: true, value: 418.69 });
+    fireEvent.loadedMetadata(destination);
+    expect(destination.currentTime).toBe(100);
+    expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
+    Object.defineProperty(destination, 'readyState', { configurable: true, value: 2 });
+    Object.defineProperty(destination, 'seeking', { configurable: true, value: true });
+    fireEvent.loadedData(destination);
+    expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
+    Object.defineProperty(destination, 'seeking', { configurable: true, value: false });
+    Object.defineProperty(destination, 'readyState', { configurable: true, value: 1 });
+    fireEvent.loadedData(destination);
+    expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
+    Object.defineProperty(destination, 'readyState', { configurable: true, value: 2 });
+    fireEvent.loadedData(destination);
+    expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBe(video);
+    expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
+    send(recommend({ sequence: 3 }));
+    expect(screen.getByLabelText(`${FEEDS[2].label} video`)).toBe(destination);
+    expect(socket().sent.filter((message) => message.type === 'ack')).toEqual([
+      expect.objectContaining({ sequence: 3, match_id: 'cam-3', clock_epoch: 0 }),
+    ]);
+    expect(destination.matchpulseReadySource).toBe(`${getVideoUrl(FEEDS[2])}\ncam-3`);
+    expect(destination.closest('.tile')).toHaveAttribute('aria-busy', 'false');
     expect(socket().sent.at(-1)).toMatchObject({ type: 'playback', match_id: 'cam-3', position: 100 });
   });
 
@@ -371,94 +578,79 @@ describe('backend WebSocket', () => {
     play.mockRestore();
   });
 
-  test('the latest recommendation wins while browser view-transition callbacks are pending', () => {
-    const callbacks = [];
-    document.startViewTransition = (callback) => { callbacks.push(callback); return {}; };
+  test('ready automatic switches apply immediately without queuing browser view transitions', () => {
+    document.startViewTransition = jest.fn(() => ({}));
     try {
       render(<App />);
       join();
-      send(recommend()); // Pending switch to cam-3.
-      send(recommend({ sequence: 3, selected_match_id: 'cam-1' })); // Latest decision stays here.
-      act(() => callbacks.forEach((callback) => callback()));
+      send(recommend());
+      expect(screen.getByLabelText(`${FEEDS[2].label} video`)).toBe(nativePlayer(3));
+      send(recommend({ sequence: 3, selected_match_id: 'cam-1' }));
       expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBeInTheDocument();
-      expect(socket().sent.filter((message) => message.type === 'ack').map((message) => message.sequence)).toEqual([3]);
+      expect(socket().sent.filter((message) => message.type === 'ack').map((message) => message.sequence)).toEqual([2, 3]);
+      expect(document.startViewTransition).not.toHaveBeenCalled();
     } finally { delete document.startViewTransition; }
   });
 
-  test('a manual pick survives its backend acknowledgement during a pending view transition', () => {
-    const callbacks = [];
-    document.startViewTransition = (callback) => { callbacks.push(callback); return {}; };
+  test('an immediate manual promotion survives its backend acknowledgement without view transitions', () => {
+    document.startViewTransition = jest.fn(() => ({}));
     try {
       render(<App />);
       join();
       fireEvent.click(screen.getByRole('button', { name: FEEDS[1].label }));
       send(session({ sequence: 2, current_match_id: 'cam-2', manual_hold_until: Date.now() / 1000 + 30 }));
-      act(() => callbacks.forEach((callback) => callback()));
-      expect(screen.getByLabelText(`${FEEDS[1].label} video`)).toBeInTheDocument();
+      expect(screen.getByLabelText(`${FEEDS[1].label} video`)).toBe(nativePlayer(2));
       expect(screen.getByRole('heading', { name: FEEDS[1].label })).toHaveFocus();
+      expect(document.startViewTransition).not.toHaveBeenCalled();
     } finally { delete document.startViewTransition; }
   });
 
-  test('a pending automatic transition is cancelled if the playback epoch changes before application', () => {
-    const callbacks = [];
-    document.startViewTransition = (callback) => { callbacks.push(callback); return {}; };
-    try {
-      render(<App />);
-      join();
-      send(recommend());
-      send(session({ sequence: 3, playback: { position: 100, playing: true, rate: 1, clock_epoch: 1 } }));
-      act(() => callbacks.forEach((callback) => callback()));
-      expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBeInTheDocument();
-      expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
-    } finally { delete document.startViewTransition; }
+  test('an epoch change cannot resurrect a discarded cold-target proposal', () => {
+    render(<App />);
+    join(undefined, false);
+    send(recommend());
+    send(session({ sequence: 3, playback: { position: 100, playing: true, rate: 1, clock_epoch: 1 } }));
+    ready(nativePlayer(3));
+    send(recommend({ sequence: 4, clock_epoch: 0 }));
+    expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBeInTheDocument();
+    expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
+    send(recommend({ sequence: 5, clock_epoch: 1 }));
+    expect(screen.getByLabelText(`${FEEDS[2].label} video`)).toBe(nativePlayer(3));
+    expect(socket().sent.filter((message) => message.type === 'ack').map((message) => message.sequence)).toEqual([5]);
   });
 
-  test('an accepted recommendation preserves the newer actual playback time when its transition applies', () => {
-    const callbacks = [];
-    document.startViewTransition = (callback) => { callbacks.push(callback); return {}; };
-    try {
-      render(<App />);
-      join();
-      const video = screen.getByLabelText(`${FEEDS[0].label} video`);
-      send(recommend({ observation_end: 99 }));
-      video.currentTime = 100.75;
-      act(() => callbacks.forEach((callback) => callback()));
-      ready(video);
-      expect(screen.getByLabelText(`${FEEDS[2].label} video`)).toBe(video);
-      expect(video.currentTime).toBe(100.75);
-      expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(1);
-      expect(socket().sent.at(-1)).toMatchObject({ type: 'playback', position: 100.75 });
-    } finally { delete document.startViewTransition; }
+  test('instant promotion samples the current native clock even before its next timeupdate', () => {
+    render(<App />);
+    join();
+    nativePlayer(1).currentTime = 100.75;
+    nativePlayer(3).currentTime = 100.75;
+    send(recommend({ observation_end: 99 }));
+    expect(screen.getByLabelText(`${FEEDS[2].label} video`)).toBe(nativePlayer(3));
+    expect(nativePlayer(3).currentTime).toBe(100.75);
+    expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(1);
+    expect(socket().sent.at(-1)).toMatchObject({ type: 'playback', position: 100.75 });
   });
 
-  test('a pending recommendation is dropped if actual media advances beyond its observation freshness before application', () => {
-    const callbacks = [];
-    document.startViewTransition = (callback) => { callbacks.push(callback); return {}; };
-    try {
-      render(<App />);
-      join();
-      send(recommend({ observation_end: 99 }));
-      // The browser can advance between timeupdate/report events (especially at
-      // higher playback rates); validation must sample it again at application.
-      screen.getByLabelText(`${FEEDS[0].label} video`).currentTime = 102.1;
-      act(() => callbacks.forEach((callback) => callback()));
-      expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBeInTheDocument();
-      expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
-    } finally { delete document.startViewTransition; }
+  test('a stale observation is rejected using the current native clock before promotion', () => {
+    render(<App />);
+    join();
+    nativePlayer(1).currentTime = 102.1;
+    nativePlayer(3).currentTime = 102.1;
+    send(recommend({ observation_end: 99 }));
+    expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBeInTheDocument();
+    expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
   });
 
-  test('selecting the current match cancels an automatic switch still waiting for its transition callback', () => {
-    const callbacks = [];
-    document.startViewTransition = (callback) => { callbacks.push(callback); return {}; };
-    try {
-      render(<App />);
-      join();
-      send(recommend());
-      fireEvent.keyDown(screen.getByRole('heading', { name: FEEDS[0].label }), { key: '1' });
-      act(() => callbacks.forEach((callback) => callback()));
-      expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Auto paused' })).toBeInTheDocument();
-    } finally { delete document.startViewTransition; }
+  test('selecting the current match holds off a previously discarded cold-target recommendation', () => {
+    render(<App />);
+    join(undefined, false);
+    send(recommend());
+    fireEvent.keyDown(screen.getByRole('heading', { name: FEEDS[0].label }), { key: '1' });
+    ready(nativePlayer(3));
+    send(recommend({ sequence: 3 }));
+    expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Auto paused' })).toBeInTheDocument();
+    expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
   });
 
   test('monitoring-unavailable feeds remain manually playable but cannot be automatically selected', () => {
@@ -485,8 +677,10 @@ describe('backend WebSocket', () => {
     video.currentTime = 152;
     fireEvent.timeUpdate(video);
     fireEvent.click(screen.getByRole('button', { name: FEEDS[1].label }));
-    ready(video);
-    expect(video.currentTime).toBe(157);
+    const destination = nativePlayer(2);
+    expect(destination).not.toBe(video);
+    ready(destination);
+    expect(destination.currentTime).toBe(157);
     expect(socket().sent.at(-1)).toMatchObject({ match_id: 'cam-2', position: 142 });
   });
 
@@ -534,9 +728,11 @@ describe('backend WebSocket', () => {
     player.currentTime = 141.5;
     fireEvent.timeUpdate(player);
     fireEvent.click(screen.getByRole('button', { name: FEEDS[6].label }));
-    ready(player);
-    expect(screen.getByLabelText(`${FEEDS[6].label} video`)).toBe(player);
-    expect(player.currentTime).toBe(141.5);
+    const destination = nativePlayer(7);
+    ready(destination);
+    expect(screen.getByLabelText(`${FEEDS[6].label} video`)).toBe(destination);
+    expect(destination).not.toBe(player);
+    expect(destination.currentTime).toBe(141.5);
     expect(Array.from(strip.querySelectorAll('video'))).toEqual(previewNodes);
     expect(container.querySelectorAll('.tile--main video')).toHaveLength(1);
   });
@@ -616,7 +812,7 @@ describe('backend WebSocket', () => {
     expect(screen.queryByText(/Relative score 0.732/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Goal imminent|Attack building/)).not.toBeInTheDocument();
     expect(document.getElementById('watch')).toBeVisible();
-    expect(container.querySelectorAll('video')).toHaveLength(8);
+    expect(container.querySelectorAll('video')).toHaveLength(7);
   });
 
   test('stale or offline scores are not presented as current monitoring activity', () => {
@@ -631,35 +827,29 @@ describe('backend WebSocket', () => {
     expect(screen.getByText(/Director offline/)).toBeInTheDocument();
   });
 
-  test('a mode request cancels an older automatic transition before it can apply', () => {
-    const callbacks = [];
-    document.startViewTransition = (callback) => { callbacks.push(callback); return {}; };
-    try {
-      render(<App />);
-      join();
-      send(recommend());
-      fireEvent.change(screen.getByRole('combobox', { name: 'Director mode' }), { target: { value: 'relaxed' } });
-      act(() => callbacks.forEach((callback) => callback()));
-      expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBeInTheDocument();
-      expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
-    } finally { delete document.startViewTransition; }
+  test('a mode request does not revive a discarded cold-target recommendation after readiness', () => {
+    render(<App />);
+    join(undefined, false);
+    send(recommend());
+    fireEvent.change(screen.getByRole('combobox', { name: 'Director mode' }), { target: { value: 'relaxed' } });
+    ready(nativePlayer(3));
+    send(recommend());
+    expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBeInTheDocument();
+    expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
   });
 
-  test('an authoritative mode change cannot recreate the old pending automatic target', () => {
-    const callbacks = [];
-    document.startViewTransition = (callback) => { callbacks.push(callback); return {}; };
-    try {
-      render(<App />);
-      join();
-      send(recommend());
-      send(session({ sequence: 3, director: director({ mode: 'relaxed', config: {
-        cooldown_seconds: 20, staying_bonus: .25, confirmations_required: 3,
-      } }) }));
-      act(() => callbacks.forEach((callback) => callback()));
-      expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBeInTheDocument();
-      expect(screen.getByRole('combobox', { name: 'Director mode' })).toHaveValue('relaxed');
-      expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
-    } finally { delete document.startViewTransition; }
+  test('an authoritative mode change cannot recreate an old discarded automatic target', () => {
+    render(<App />);
+    join(undefined, false);
+    send(recommend());
+    send(session({ sequence: 3, director: director({ mode: 'relaxed', config: {
+      cooldown_seconds: 20, staying_bonus: .25, confirmations_required: 3,
+    } }) }));
+    ready(nativePlayer(3));
+    send(recommend());
+    expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Director mode' })).toHaveValue('relaxed');
+    expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
   });
 
   test('without a stored preference the browser respects the server initial mode', () => {
@@ -669,30 +859,35 @@ describe('backend WebSocket', () => {
     expect(socket().sent.filter((message) => message.type === 'director_mode')).toHaveLength(0);
   });
 
-  test('a selected source that becomes ready after recommendation expiry never sends a stale ACK', () => {
+  test('a discarded source becoming ready after recommendation expiry never sends a stale ACK', () => {
     jest.useFakeTimers();
     try {
       render(<App />);
-      join();
+      join(undefined, false);
       send(recommend());
-      const video = screen.getByLabelText(`${FEEDS[2].label} video`);
+      const video = nativePlayer(3);
       expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
       act(() => jest.advanceTimersByTime(3100));
       ready(video);
+      expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBeInTheDocument();
       expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
       expect(screen.queryByText(`Switched to ${FEEDS[2].label}`)).not.toBeInTheDocument();
     } finally { jest.useRealTimers(); }
   });
 
-  test('a newer recommendation for a buffering selected source ACKs only the latest decision after readiness', () => {
+  test('repeated cold-source proposals are not queued and a new ready proposal alone is acknowledged', () => {
     render(<App />);
-    join();
+    join(undefined, false);
     send(recommend());
-    const video = screen.getByLabelText(`${FEEDS[2].label} video`);
+    const video = nativePlayer(3);
     send(recommend({ sequence: 3 }));
     expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
     ready(video);
-    expect(socket().sent.filter((message) => message.type === 'ack').map((message) => message.sequence)).toEqual([3]);
+    expect(screen.getByLabelText(`${FEEDS[0].label} video`)).toBeInTheDocument();
+    expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
+    send(recommend({ sequence: 4 }));
+    expect(screen.getByLabelText(`${FEEDS[2].label} video`)).toBe(video);
+    expect(socket().sent.filter((message) => message.type === 'ack').map((message) => message.sequence)).toEqual([4]);
     expect(screen.getByText(`Switched to ${FEEDS[2].label}`)).toBeInTheDocument();
   });
 
@@ -713,10 +908,10 @@ describe('backend WebSocket', () => {
       expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
       return;
     }
-    expect(screen.getByLabelText(`${FEEDS[2].label} video`)).toBe(video);
-    expect(socket().sent.filter((message) => message.type === 'ack')).toHaveLength(0);
-    ready(video);
-    expect(video.currentTime).toBe(100);
+    const destination = nativePlayer(3);
+    expect(screen.getByLabelText(`${FEEDS[2].label} video`)).toBe(destination);
+    expect(destination).not.toBe(video);
+    expect(destination.currentTime).toBe(100);
     expect(socket().sent.filter((message) => message.type === 'ack').map((message) => message.sequence)).toEqual([2]);
   });
 

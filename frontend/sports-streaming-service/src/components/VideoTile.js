@@ -18,9 +18,14 @@ export default function VideoTile({ feed, onClick, paused = false, hidden = fals
   useEffect(() => {
     const video = ref.current;
     let cancelled = false;
-    video.muted = true;
+    const silence = () => {
+      video.defaultMuted = true;
+      if (!video.muted) video.muted = true;
+    };
+    silence();
     const sync = () => {
       if (cancelled) return;
+      silence();
       if (paused || hidden) {
         video.pause();
         return;
@@ -38,13 +43,17 @@ export default function VideoTile({ feed, onClick, paused = false, hidden = fals
       if (clock?.current.playing === false) video.pause();
       else if (video.paused) video.play()?.catch(() => {});
     };
+    ['volumechange', 'play', 'playing', 'loadeddata'].forEach((event) => video.addEventListener(event, silence));
     video.addEventListener('loadedmetadata', sync);
     sync();
     // Bounded drift correction; never seek every frame.
     const interval = !hidden && !paused ? setInterval(sync, 2000) : undefined;
     return () => {
       cancelled = true;
+      silence();
+      video.pause();
       clearInterval(interval);
+      ['volumechange', 'play', 'playing', 'loadeddata'].forEach((event) => video.removeEventListener(event, silence));
       video.removeEventListener('loadedmetadata', sync);
     };
   }, [source, paused, hidden, clock, offset, feed.healthy]);

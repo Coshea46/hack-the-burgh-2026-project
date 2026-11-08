@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowUpRight, Newspaper, Search } from 'lucide-react';
-import { apiGet, safeWebUrl, updatedLabel } from '../platformApi';
+import { apiGet, isPlatformConnectionError, safeWebUrl, updatedLabel, useApiRecovery } from '../platformApi';
 import DataNotice from './DataNotice';
 
 const TOPICS = [['football', 'All football'], ['premier-league', 'Premier League'], ['european', 'European football'],
@@ -31,6 +31,8 @@ export default function NewsPage({ active }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
+  const [networkFailure, setNetworkFailure] = useState(false);
+  const recovery = useApiRecovery(active, networkFailure, loading);
   const lastAttempt = useRef(0);
   useEffect(() => {
     if (!active) return undefined;
@@ -38,10 +40,13 @@ export default function NewsPage({ active }) {
     setLoading(true); setError(''); setData(null);
     const refresh = attempt !== lastAttempt.current;
     lastAttempt.current = attempt;
-    apiGet('/api/news', { topic, q: query }, refresh).then((value) => { if (!cancelled) setData(value); })
-      .catch((reason) => { if (!cancelled) setError(reason.message); }).finally(() => { if (!cancelled) setLoading(false); });
+    apiGet('/api/news', { topic, q: query }, refresh).then((value) => {
+      if (!cancelled) { setData(value); setNetworkFailure(false); }
+    }).catch((reason) => {
+      if (!cancelled) { setNetworkFailure(isPlatformConnectionError(reason)); setError(reason.message); }
+    }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [active, topic, query, attempt]);
+  }, [active, topic, query, attempt, recovery]);
   useEffect(() => {
     const expires = Number.isFinite(data?.content_expires_at) ? data.content_expires_at
       : Number.isFinite(data?.fetched_at) ? data.fetched_at + 24 * 60 * 60 : null;

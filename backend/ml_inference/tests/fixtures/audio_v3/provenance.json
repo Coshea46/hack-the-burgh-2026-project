@@ -1,0 +1,20 @@
+{
+  "release": "autonomous-v1/delivery-v1",
+  "window_id": "cb4931f6fc14c25ee8606984",
+  "match_id": "england_epl/2014-2015/2015-04-11 - 19-30 Burnley 0 - 1 Arsenal",
+  "half": 1,
+  "split": "valid",
+  "observation_start_seconds": 0.0,
+  "observation_end_seconds": 5.0,
+  "sample_rate": 16000,
+  "pcm_file_sha256": "1968aba9500b3d76ee2043d9e1ffc34788a1dfac0750ebc4a07fd65e03baa693",
+  "raw_file_sha256": "1594ba24c971d5bb39b7e56ea64a7f011e9841c0eb5ef71cb4d538e380a4beda",
+  "decoder_sha256": "e7772f027ddb2c66f3801329995c8c8a1c9a36e23e0c44d92aeaa7023c75c8a4",
+  "source_video_sha256": "b3a322455be2bef5db927950293939e67331e7e1054070389e598414943d3009",
+  "source_receipt_sha256": "35356b8136a317a4a77c185e64e85a24dd8763c0fdcee882e0f6e09cc49966db",
+  "core5_atol": 0.000002,
+  "core5_rtol": 0.00001,
+  "availability_masks_exact": true,
+  "visual210_bytes_exact": true,
+  "test_accessed": false
+}

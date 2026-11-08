@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 
-// docker-compose sets REACT_APP_WS_URL; plain `npm start` falls back to the local backend.
+// docker-compose sets REACT_APP_WS_URL; plain `npm start` uses backend.local.
 // Set REACT_APP_WS_URL= (empty) to turn the connection off.
-export const WS_URL = process.env.REACT_APP_WS_URL ?? 'ws://localhost:8000';
+export const WS_URL = process.env.REACT_APP_WS_URL ?? 'ws://127.0.0.1:8030';
 
 /**
  * Keeps a WebSocket to the backend open, reconnecting with backoff
@@ -38,6 +38,7 @@ export default function useBackendSocket(onMessage, url = WS_URL, sendRef) {
         if (disposed || currentSocket !== socket) return;
         attempts = 0;
         setStatus('connected');
+        window.dispatchEvent(new Event('matchpulse-backend-connected'));
       };
       socket.onmessage = (event) => {
         if (disposed || currentSocket !== socket) return;

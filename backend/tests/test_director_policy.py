@@ -132,12 +132,16 @@ def test_session_score_poll_rechecks_cooldown_without_a_new_inference_snapshot()
         session = await ReplaySession(registry(), config=configuration(director_mode="balanced"), bridge=bridge,
                                        publish=emitted.append, now=clock, monotonic=clock,
                                        session_id="session").initialize()
+        # An already-active model must first acknowledge readiness. A manually
+        # assigned running label alone cannot enable the production Director.
+        ready = {**scores(sequence=0), "state": "ready", "scores": []}
+        assert not session.accept_snapshot(ready)
+        assert session.snapshot()["auto_available"]
         session.director.commit_selection("cam-2", now=1000, kind="automatic")
         for index, end in enumerate((5, 7, 9, 11, 13, 15)):
             evaluate(session.director, end, 1001 + index * 2, {"cam-1": 0.9, "cam-2": 0.1})
         session.position, clock.value = 15, 1012
         session._handle = "already-active"
-        session._set_state("running")
         task = asyncio.create_task(session._score_loop())
         try:
             await asyncio.sleep(0.03)

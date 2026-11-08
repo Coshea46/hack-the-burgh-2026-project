@@ -34,31 +34,41 @@ test('the three navigation links have one active page and preserve every media e
     await act(async () => fireEvent.click(within(navigation).getByRole('link', { name })));
     expect(within(navigation).getAllByRole('link', { current: 'page' })).toHaveLength(1);
     expect(within(navigation).getByRole('link', { current: 'page' })).toHaveAccessibleName(name);
-    expect([...container.querySelectorAll('video')]).toEqual(videos);
+    const current = [...container.querySelectorAll('video')];
+    expect(current).toHaveLength(videos.length);
+    current.forEach((node, index) => expect(node).toBe(videos[index]));
+    expect(container.querySelector('.tile--main video')).toBe(video);
     expect(video.getAttribute('src')).toBe(source);
     expect(video.currentTime).toBe(137.25);
     expect(video.playbackRate).toBe(1.25); expect(video.volume).toBe(.3);
   }
-  expect(videos).toHaveLength(8);
+  expect(videos).toHaveLength(FEEDS.length);
   expect(screen.getByRole('region', { name: 'Other matches' })).toBeVisible();
 });
 
-test('Watch groups director and captions beside the player before alternatives, with no heading badges', () => {
+test('Watch keeps the seven persistent players together beside director and captions, with no heading badges', () => {
   render(<App />);
   const watch = screen.getByRole('region', { name: 'Watch matches' });
   const player = screen.getByLabelText(`${FEEDS[0].label} video`);
   const director = within(watch).getByRole('complementary', { name: 'Auto Director settings' });
-  const alternatives = within(watch).getByRole('complementary', { name: 'Match selection' });
+  const players = within(watch).getByRole('region', { name: 'Other matches' });
   const captions = within(watch).getByRole('region', { name: 'Commentary captions' });
+  const stage = watch.querySelector('.watch-stage');
+  expect(players.parentElement).toBe(stage);
+  expect(players.querySelectorAll('video')).toHaveLength(FEEDS.length);
+  expect(players.querySelector('.tile--main video')).toBe(player);
+  expect(players.querySelectorAll('.tile--preview')).toHaveLength(FEEDS.length - 1);
   expect(player.compareDocumentPosition(director) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(director.compareDocumentPosition(captions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(captions.compareDocumentPosition(alternatives) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(director.parentElement).toBe(captions.parentElement);
-  for (const label of ['Prerecorded replay', 'Watching', 'Your selection', 'MatchPulse selected']) {
+  expect(director.parentElement.parentElement).toBe(stage);
+  for (const label of ['Prerecorded replay', 'Watching', 'Your selection', 'Touchline selected']) {
     expect(within(watch).queryByText(label, { exact: true })).not.toBeInTheDocument();
   }
   expect(within(captions).queryByRole('combobox')).not.toBeInTheDocument();
-  expect(within(alternatives).getAllByRole('button')).toHaveLength(7);
+  expect(within(players).getAllByRole('button')).toHaveLength(FEEDS.length - 1);
+  FEEDS.slice(1).forEach((feed) => expect(within(players).getByRole('button', { name: feed.label })).toBeInTheDocument());
+  expect(within(watch).getByRole('button', { name: 'Pause previews' })).toBeInTheDocument();
 });
 
 test.each(['#moments', '#about', '#unknown'])('obsolete or unknown initial route %s safely opens Watch', (hash) => {

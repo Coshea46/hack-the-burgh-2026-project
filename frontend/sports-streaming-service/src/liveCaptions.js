@@ -1,8 +1,9 @@
 export const LIVE_CAPTION_MODEL = 'scribe_v2_realtime';
 const STATES = new Set(['connecting', 'listening', 'partial', 'committed', 'paused', 'unavailable', 'stopped', 'error']);
 
+export const captionSessionEnded = (value) => ['session_closed', 'all_sources_ended', 'session_ended', 'source_ended'].includes(value?.reason);
+
 export function liveCaptionStatus(value, connected = true, canControl = true) {
-  if (!connected) return 'Connect to the replay for live commentary captions.';
   const reason = value?.reason || value?.status;
   if (['auth_error', 'provider_permission_speech_to_text_missing'].includes(reason)) return 'ElevenLabs could not authorize live captions. Ask the demo operator to check Speech to Text access.';
   if (reason === 'feature_disabled') return 'Live captions are disabled for this demo.';
@@ -10,15 +11,18 @@ export function liveCaptionStatus(value, connected = true, canControl = true) {
   if (reason === 'runtime_unavailable') return 'The live caption service is not ready. Please try again later.';
   if (['caption_runtime_missing', 'caption_worker_unavailable', 'caption_worker_ended'].includes(reason)) return 'The live caption service needs attention from the site operator.';
   if (reason === 'source_identity_unverified') return 'Live captions are unavailable because this source could not be verified.';
-  if (['budget_exhausted', 'budget_deadline', 'audio_limit', 'session_limit', 'deadline', 'time_limit', 'budget_limit'].includes(reason)) return 'The live caption demo limit has been reached.';
+  if (['budget_exhausted', 'budget_deadline', 'audio_limit', 'session_limit', 'deadline', 'time_limit', 'budget_limit'].includes(reason)) return 'Live caption session allowance has been reached.';
   if (['rate_limited', 'rate_limit', 'quota_exceeded'].includes(reason)) return 'Live captions are temporarily limited by the provider. Please try again later.';
   if (['insufficient_credits', 'insufficient_credit', 'credits_exhausted', 'account_ineligible'].includes(reason)) return 'Live captions are unavailable for this provider account.';
+  if (captionSessionEnded(value)) return 'This replay session has ended. Start a new replay session for live captions.';
+  if (!connected) return 'The replay connection is unavailable. Reconnecting automatically; no live captions are being received.';
   if (value?.status === 'paused') return 'Live captions pause with the player.';
   if (['source_preparing', 'awaiting_playback', 'playback_inactive', 'seek'].includes(reason)
     || ['stalled', 'buffering', 'waiting_for_playback'].includes(value?.status)) return 'Live captions are waiting for the player to resume.';
   if (['unavailable', 'error', 'failed'].includes(value?.status) || value?.available === false) return 'Live commentary captions are unavailable right now.';
   if (!canControl && !value?.enabled) return 'Another viewer controls live caption streaming.';
   if (['connecting', 'starting', 'warming', 'waiting'].includes(value?.status)) return 'Connecting live commentary captions…';
+  if (value?.status === 'stopped') return 'Live caption streaming has stopped. Check the replay and caption service status.';
   if (['listening', 'partial', 'committed', 'live', 'streaming', 'running'].includes(value?.status)) return 'Listening to the focused match…';
   return value?.enabled ? 'Waiting for live commentary captions…' : 'Live captions are off.';
 }

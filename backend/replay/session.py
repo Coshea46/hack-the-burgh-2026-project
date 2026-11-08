@@ -14,9 +14,43 @@ from .director import DIRECTOR_MODES, Director
 from .sources import number
 
 try:
-    from ..ml_inference.replay_contract import MATCHES_PER_GPU, MAX_GPU_WORKERS
+    from ..captions.events import (
+        MAX_CAPTION_TEXT_CHARS,
+        MAX_CAPTION_WORD_CHARS,
+        MAX_CAPTION_WORDS,
+    )
+    from ..captions.limits import (
+        DEFAULT_AUDIO_SECONDS,
+        DEFAULT_COST_USD,
+        MAX_AUDIO_SECONDS,
+        MAX_COST_USD,
+        wall_allowance_seconds,
+    )
+    from ..ml_inference.model_release import NEW_MODEL_VERSION
+    from ..ml_inference.replay_contract import (
+        MATCHES_PER_GPU,
+        MAX_GPU_WORKERS,
+        MAX_SESSION_BUDGET_USD,
+    )
 except ImportError:
-    from ml_inference.replay_contract import MATCHES_PER_GPU, MAX_GPU_WORKERS
+    from captions.events import (
+        MAX_CAPTION_TEXT_CHARS,
+        MAX_CAPTION_WORD_CHARS,
+        MAX_CAPTION_WORDS,
+    )
+    from captions.limits import (
+        DEFAULT_AUDIO_SECONDS,
+        DEFAULT_COST_USD,
+        MAX_AUDIO_SECONDS,
+        MAX_COST_USD,
+        wall_allowance_seconds,
+    )
+    from ml_inference.model_release import NEW_MODEL_VERSION
+    from ml_inference.replay_contract import (
+        MATCHES_PER_GPU,
+        MAX_GPU_WORKERS,
+        MAX_SESSION_BUDGET_USD,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +142,7 @@ class SessionConfig:
                 or not re.fullmatch(r"[A-Za-z0-9_.:/-]{1,160}", self.model_version)):
             raise ValueError("Invalid model version")
         number(self.max_duration_seconds, "max_duration_seconds", minimum=10, maximum=3600)
-        number(self.max_estimated_cost_usd, "max_estimated_cost_usd", minimum=0.01, maximum=10)
+        number(self.max_estimated_cost_usd, "max_estimated_cost_usd", minimum=0.01, maximum=MAX_SESSION_BUDGET_USD)
         number(self.heartbeat_seconds, "heartbeat_seconds", minimum=1, maximum=30)
         number(self.pause_idle_seconds, "pause_idle_seconds", minimum=1, maximum=30)
         number(self.poll_seconds, "poll_seconds", minimum=0.05, maximum=2)
@@ -140,8 +174,8 @@ class SessionConfig:
         if flag not in ("true", "false"):
             raise ValueError("MATCHPULSE_MONITOR must be true or false")
         enabled = flag == "true"
-        mode = env.get("MATCHPULSE_ML_MODE", "") if enabled else "disabled"
-        checkpoint = env.get("MATCHPULSE_ML_CHECKPOINT") or None
+        mode = (env.get("MATCHPULSE_ML_MODE") or "real") if enabled else "disabled"
+        checkpoint = (env.get("MATCHPULSE_ML_CHECKPOINT") or NEW_MODEL_VERSION) if mode == "real" else None
         version = env.get("MATCHPULSE_MODEL_VERSION") or (checkpoint if mode == "real" else
                                                         "features-mock-v1" if enabled else "disabled")
         raw_mock = env.get("MATCHPULSE_MOCK_SCORES_JSON")
@@ -173,7 +207,9 @@ class ReplaySession:
 
     def __init__(self, registry, *, config=None, bridge=None, publish=None,
                  now=time.time, monotonic=time.monotonic, session_id=None,
-                 caption_worker=None, caption_max_audio_seconds=30, caption_max_cost_usd=0.01):
+                 caption_worker=None, caption_max_audio_seconds=DEFAULT_AUDIO_SECONDS,
+                 caption_max_cost_usd=DEFAULT_COST_USD, prepared_config=None,
+                 bridge_factory=None, preparation_error=None):
         self.registry, self.config, self.bridge = registry, config or SessionConfig(), bridge
         self.publish = publish or (lambda payload: None)
         self.now, self.monotonic = now, monotonic
@@ -183,6 +219,7 @@ class ReplaySession:
         self.director = None
         self.clients = []
         self.controller = None
+        self._controller_report_pending = False
         self.position, self.playing, self.rate, self.stalled = 0.0, False, 1.0, False
         self.clock_epoch = 0
         self.state = "waiting" if self.config.monitor else "disabled"
@@ -211,8 +248,19 @@ class ReplaySession:
         self._unplayable = set()
         self._reserved_compute_usd = 0.0
         self._selection_pending_until = 0.0
-        number(caption_max_audio_seconds, "caption_max_audio_seconds", minimum=1, maximum=30)
-        number(caption_max_cost_usd, "caption_max_cost_usd", minimum=0.0001, maximum=0.01)
+        if prepared_config is not None and (not isinstance(prepared_config, SessionConfig)
+                or not prepared_config.monitor or prepared_config.mode != 'real'
+                or prepared_config.max_duration_seconds > 3600 or prepared_config.max_estimated_cost_usd > MAX_SESSION_BUDGET_USD
+                or prepared_config.max_restarts != 0):
+            raise ValueError(f'Prepared real monitoring requires a bounded 3600-second/${MAX_SESSION_BUDGET_USD} service allowance')
+        self._prepared_config, self._bridge_factory = prepared_config, bridge_factory
+        self._preparation_error = (preparation_error if preparation_error in
+            ('credentials_unavailable', 'not_prepared') else None)
+        self._activation_requested = False
+        self._activation_inflight = False
+        self._start_authorized = bool(prepared_config is not None and self.config.monitor)
+        number(caption_max_audio_seconds, "caption_max_audio_seconds", minimum=1, maximum=MAX_AUDIO_SECONDS)
+        number(caption_max_cost_usd, "caption_max_cost_usd", minimum=0.0001, maximum=MAX_COST_USD)
         self.caption_worker = caption_worker
         self._caption_configured = caption_worker is not None
         self.caption_max_audio_seconds = caption_max_audio_seconds
@@ -249,6 +297,8 @@ class ReplaySession:
                                  emergency_enabled=self.config.director_emergency_enabled,
                                  emergency_margin=self.config.director_emergency_margin)
         self._model_health = dict(self.director.healthy)
+        if self._prepared_config is not None and not self.config.monitor:
+            self.director.set_auto(False)
         if self.config.mock_scores is not None and set(self.config.mock_scores) - set(self.director.match_ids):
             raise ValueError("Mock score configured for an unregistered match")
         if self.config.monitor and self.bridge is None:
@@ -267,12 +317,95 @@ class ReplaySession:
                 self.bridge = ReplayClient()
         return self
 
+    @property
+    def auto_starting(self):
+        return bool(self._prepared_config is not None and not self._worker_ready
+            and self.state not in ('error', 'ended', 'stopped')
+            and (self._activation_requested or self._activation_inflight or self._start_authorized or self._start_inflight is not None
+                 or self._handle is not None) and not self._closing)
+
+    def auto_start_status(self):
+        if self._closing:
+            return False, 'closing'
+        if self._prepared_config is None:
+            return False, self._preparation_error or 'not_prepared'
+        if self._finished and self._finished_reason == 'worker_error':
+            return False, 'model_unavailable'
+        if self.auto_starting:
+            return False, 'starting'
+        if self._handle is not None or self._start_inflight is not None or self._stopping_handle is not None:
+            return False, 'monitoring_active'
+        if self._ended:
+            return False, 'source_ended'
+        elapsed = 0 if self._monitor_started_at is None else max(0, self.monotonic() - self._monitor_started_at)
+        remaining = self._prepared_config.max_duration_seconds - elapsed
+        if remaining < 5:
+            return False, 'session_expired'
+        workers = self._prepared_config.gpu_workers or math.ceil(len(self.registry.sources) / MATCHES_PER_GPU)
+        try:
+            from ..ml_inference.replay_contract import MAX_WORKER_RATE
+        except ImportError:
+            from ml_inference.replay_contract import MAX_WORKER_RATE
+        if (remaining + 330) * workers * MAX_WORKER_RATE > self._prepared_config.max_estimated_cost_usd - self._reserved_compute_usd:
+            return False, 'budget_exhausted'
+        return True, 'available'
+
+    async def _activate_prepared_monitoring(self):
+        self._activation_requested = False
+        # Recheck after the socket handler queued its intent; disconnect/Off or
+        # a service limit can overtake this background control tick.
+        if not self.director.auto_enabled or self._closing:
+            self._start_authorized = False
+            return
+        can_start, reason = self.auto_start_status()
+        # The queued authorization itself makes status starting. Temporarily
+        # remove it to evaluate immutable service time/budget constraints.
+        if self._start_authorized:
+            self._start_authorized = False
+            can_start, reason = self.auto_start_status()
+        if not can_start:
+            self._set_state('stopped', 'auto_' + reason)
+            return
+        if self.bridge is None:
+            self._activation_inflight = True
+            try:
+                if self._bridge_factory is None:
+                    try:
+                        from ..ml_inference.replay_ws_client import (
+                            ReplayWebSocketClient,
+                        )
+                    except ImportError:
+                        from ml_inference.replay_ws_client import ReplayWebSocketClient
+                    self.bridge = await asyncio.to_thread(ReplayWebSocketClient.from_env)
+                else:
+                    self.bridge = await asyncio.to_thread(self._bridge_factory)
+            finally:
+                self._activation_inflight = False
+        if not self.director.auto_enabled or self._closing:
+            self._start_authorized = False
+            self._set_state('disabled' if not self.config.monitor else 'stopped')
+            return
+        self.config = self._prepared_config
+        self.director.mode, self.director.model_version = self.config.mode, self.config.model_version
+        self.director.reset(self.clock_epoch)
+        self._last_recommendation = None
+        self._finished, self._stop_requested = False, False
+        self._start_authorized = True
+        self._set_state('starting')
+
     def _next_sequence(self):
         self.sequence += 1
         return self.sequence
 
     def controls_enabled(self, client_id):
-        return client_id == self.controller
+        return client_id is not None and client_id in self.clients and client_id == self.controller
+
+    @property
+    def auto_available(self):
+        """A requested Auto preference becomes active only after worker readiness."""
+        return bool(self.config.monitor and self.config.mode in ("real", "features_mock")
+                    and self._worker_ready and self.state in ("running", "degraded", "paused")
+                    and not (self._finished or self._stop_requested or self._closing))
 
     def snapshot(self, client_id=None):
         result = {"type": "session", "protocol_version": 1,
@@ -284,7 +417,12 @@ class ReplaySession:
                   "matches": [source.public_spec(self.director.healthy[source.match_id])
                               for source in self.sources],
                   "current_match_id": self.director.current_match_id,
-                  "auto_enabled": self.director.auto_enabled,
+                  "can_claim_control": True,
+                  "auto_available": self.auto_available,
+                  "auto_enabled": self.director.auto_enabled and self.auto_available,
+                  "auto_requested": self.director.auto_enabled,
+                  "auto_can_start": self.auto_start_status()[0],
+                  "auto_start_reason": self.auto_start_status()[1], "auto_starting": self.auto_starting,
                   "manual_hold_until": self.director.manual_hold_until,
                   "director": self.director.state(now=self.now(), playback_position=self.position),
                   "captions": self.caption_state()}
@@ -329,6 +467,14 @@ class ReplaySession:
     def _caption_revoke(self, reason, *, status="paused"):
         if self.caption_worker is None:
             return
+        incidental = {"viewer_disconnected", "manual_selection", "automatic_selection",
+                      "source_preparing", "seek", "playback_inactive", "control_transferred"}
+        if (not self._caption_enabled and self._caption_status in ("disabled", "unavailable", "stopped", "error")
+                and reason in incidental):
+            # A source transition or reconnect must not hide an exhausted
+            # allowance/provider failure. Revocation still invalidates old data;
+            # explicit On/Off and terminal updates remain authoritative.
+            status, reason = self._caption_status, self._caption_reason
         self._caption_generation += 1
         self._caption_active_identity = None
         self._caption_status, self._caption_reason = status, reason
@@ -344,7 +490,7 @@ class ReplaySession:
             return None
         if self._caption_deadline is not None and self.now() >= self._caption_deadline:
             return None
-        if (self.last_report_at is None or self.monotonic() - self.last_report_at >= 5
+        if (self._controller_report_pending or self.last_report_at is None or self.monotonic() - self.last_report_at >= 5
                 or self.controller is None or not self.playing or self.stalled or self._ended):
             return None
         match_id = self._caption_actual_match_id
@@ -398,8 +544,8 @@ class ReplaySession:
             # Loading, paused playback and the ML startup buffer consume no
             # caption allowance. The first actual ready focused-player report
             # starts one immutable bound shared by all toggles and generations.
-            self._caption_deadline = self.now() + min(
-                self.caption_max_audio_seconds, self.caption_max_cost_usd * 3600 / 0.39)
+            self._caption_deadline = self.now() + wall_allowance_seconds(
+                self.caption_max_audio_seconds, self.caption_max_cost_usd)
             view["deadline"] = self._caption_deadline
         identity = (view["match_id"], view["clock_epoch"])
         if identity != self._caption_active_identity:
@@ -416,6 +562,13 @@ class ReplaySession:
             self._publish_session()
 
     def _accept_caption_event(self, event):
+        def reject(reason):
+            self.metrics['caption_events_rejected'] = self.metrics.get('caption_events_rejected', 0) + 1
+            counts = self.metrics.setdefault('caption_rejection_counts', {})
+            counts[reason] = counts.get(reason, 0) + 1
+            self.metrics['caption_last_rejection_reason'] = reason
+            return False
+
         if (not isinstance(event, dict) or not self._caption_enabled or self._closing
                 or self._caption_active_identity is None or self._caption_view() is None
                 or event.get("session_id") != self.session_id
@@ -424,16 +577,16 @@ class ReplaySession:
                 or event.get("clock_epoch") != self.clock_epoch
                 or event.get("match_id") != self._caption_actual_match_id
                 or event.get("model") != "scribe_v2_realtime"):
-            return False
+            return reject('inactive_or_identity')
         state = event.get("state")
         if state not in ("connecting", "listening", "partial", "committed", "paused", "unavailable", "stopped", "error"):
-            return False
+            return reject('invalid_state')
         text = event.get("text", "")
-        if not isinstance(text, str) or len(text) > 4000:
-            return False
+        if not isinstance(text, str) or len(text) > MAX_CAPTION_TEXT_CHARS:
+            return reject('invalid_text_size')
         view = self._caption_view()
         if event.get("source_key") != view["source_key"] or event.get("source_identity") != view["source_identity"]:
-            return False
+            return reject('source_identity')
         result = {"type": "caption", "protocol_version": 1, "session_id": self.session_id,
                   "sequence": self._next_sequence(), "generation": self._caption_generation,
                   "clock_epoch": self.clock_epoch, "match_id": event["match_id"],
@@ -444,22 +597,23 @@ class ReplaySession:
         valid_anchor = (isinstance(anchor, (int, float)) and not isinstance(anchor, bool)
                         and math.isfinite(anchor) and 0 <= anchor <= view["position"] + view["offset_seconds"] + 0.05)
         if text and not valid_anchor:
-            return False
+            return reject('invalid_anchor')
         if valid_anchor:
             result["source_anchor_seconds"] = anchor
         words = event.get("words")
         if words is not None:
-            if not isinstance(words, list) or len(words) > 400:
-                return False
+            if not isinstance(words, list) or len(words) > MAX_CAPTION_WORDS:
+                return reject('invalid_words_size')
             projected = []
             for word in words:
-                if not isinstance(word, dict) or not isinstance(word.get("text"), str) or len(word["text"]) > 100:
-                    return False
+                if (not isinstance(word, dict) or not isinstance(word.get("text"), str)
+                        or len(word["text"]) > MAX_CAPTION_WORD_CHARS):
+                    return reject('invalid_word')
                 start, end = word.get("start_seconds"), word.get("end_seconds")
                 if (any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
                         for value in (start, end)) or not valid_anchor
                         or not anchor <= start <= end <= view["position"] + view["offset_seconds"] + 0.05):
-                    return False
+                    return reject('invalid_word_time')
                 projected.append({"text": word["text"], "start_seconds": start, "end_seconds": end})
             result["words"] = projected
             if projected:
@@ -474,6 +628,7 @@ class ReplaySession:
         if state in ("paused", "unavailable", "stopped", "error"):
             self._caption_reason = result.get("reason")
         self._caption_status = state
+        self.metrics['caption_events_accepted'] = self.metrics.get('caption_events_accepted', 0) + 1
         self.publish(result)
         if state in ("unavailable", "stopped", "error"):
             self._caption_enabled = False
@@ -515,15 +670,37 @@ class ReplaySession:
         return {"type": "error", "protocol_version": 1, "session_id": self.session_id,
                 "sequence": self._next_sequence(), "code": code}
 
+    def _claim_control(self, client_id):
+        if self._closing or self._closed:
+            return self._error("session_closed")
+        if client_id not in self.clients:
+            return self._error("viewer_not_registered")
+        if not self.controls_enabled(client_id):
+            self.controller = client_id
+            self._controller_report_pending = True
+            self._last_recommendation = self._last_ack_sequence = None
+            self.director.reset_confirmation()
+            self._selection_pending_until = 0.0
+            self._caption_pending_match_id = self._caption_pending_until = None
+            self._caption_preparing_report_sequence = None
+            self._caption_report_received_at = None
+            self._caption_revoke("control_transferred")
+            # Preserve the existing worker's original lease without renewing
+            # its permit. Only a fresh report from this owner can resume updates.
+        self._publish_session()
+        return None
+
     def receive(self, client_id, message):
         """Validate and update local state only; no decoder, SDK or network I/O."""
         if not isinstance(message, dict) or message.get("session_id") != self.session_id:
             return self._error("session_mismatch")
-        if message.get("type") == "ack":
-            return self._receive_ack(client_id, message)
+        if message.get("type") == "claim_control":
+            return self._claim_control(client_id)
         if not self.controls_enabled(client_id):
             return self._error("viewer_in_use")
         kind = message.get("type")
+        if kind == "ack":
+            return self._receive_ack(client_id, message)
         if kind == "playback":
             return self._receive_playback(message)
         if kind == "captions":
@@ -575,7 +752,21 @@ class ReplaySession:
             enabled = message.get("enabled")
             if not isinstance(enabled, bool):
                 return self._error("invalid_auto")
+            if enabled and not self.auto_available:
+                if self._prepared_config is None:
+                    return self._error("auto_unavailable")
+                if not self.auto_starting and self._handle is None:
+                    can_start, reason = self.auto_start_status()
+                    if not can_start:
+                        return self._error('auto_' + reason)
+                    self._activation_requested = True
+                    self._start_authorized = True
+            if not enabled and self._prepared_config is not None and self._start_inflight is None and self._handle is None:
+                self._activation_requested = self._start_authorized = False
+                self._set_state('disabled')
             self.director.set_auto(enabled)
+            if enabled and self._activation_requested:
+                self._set_state('starting')
             self._last_recommendation = None
             self._publish_session()
             return None
@@ -592,6 +783,7 @@ class ReplaySession:
     def _valid_recommendation(self, recommendation, *, position=None):
         position = self.position if position is None else position
         return (not self._finished and not self._stop_requested and not self._closing
+                and not self._controller_report_pending
                 and self.state in ("running", "degraded", "paused")
                 and recommendation is not None and recommendation.get("clock_epoch") == self.clock_epoch
                 and self.director.healthy.get(recommendation.get("selected_match_id"), False)
@@ -638,6 +830,7 @@ class ReplaySession:
         if any(not isinstance(message.get(key, False), bool) for key in
                ("playing", "stalled", "available", "ended")):
             return self._error("invalid_playback")
+        self._controller_report_pending = False
         now = self.monotonic()
         previous_health = self.director.healthy.copy()
         # A recommendation can be discarded by the player (expiry, unavailable
@@ -660,7 +853,15 @@ class ReplaySession:
         if self.last_report_at is not None:
             elapsed = max(0, now - self.last_report_at)
             movement = position - self.position
-            jumped = movement < -0.001 or movement > max(2, elapsed * max(rate, self.rate) + 1)
+            # Independent native players can differ slightly at a warm handoff.
+            # Keep the actual destination clock; this small source-change-only
+            # tolerance avoids interpreting decode jitter as a user seek.
+            handoff = (self._caption_actual_match_id is not None
+                       and message['match_id'] != self._caption_actual_match_id
+                       and message.get('available', True) and not message.get('stalled', False)
+                       and not message.get('ended', False))
+            backward_tolerance = 0.15 if handoff else 0.001
+            jumped = movement < -backward_tolerance - 1e-9 or movement > max(2, elapsed * max(rate, self.rate) + 1)
         self.position, self.rate = position, rate
         self.stalled = message.get("stalled", False) or not message.get("available", True)
         self.playing = message.get("playing", False) and not self.stalled and not message.get("ended", False)
@@ -704,10 +905,11 @@ class ReplaySession:
 
     def control(self, *, active=True):
         now = self.now()
-        fresh = (self.last_report_at is not None
+        fresh = (not self._controller_report_pending and self.last_report_at is not None
                  and self.monotonic() - self.last_report_at < self.config.heartbeat_seconds)
         result = {"session_id": self.session_id, "clock_epoch": self.clock_epoch,
                   "position": self.position, "playing": self.playing and fresh,
+                  "startup_waiting": not self._worker_ready,
                   "rate": self.rate, "active": bool(active and fresh and self.controller is not None),
                   "expires_at": (now + max(0, self.config.heartbeat_seconds
                                              - (self.monotonic() - self.last_report_at))
@@ -736,7 +938,10 @@ class ReplaySession:
         handle, self._handle = self._handle or self._stopping_handle, None
         self._worker_ready = False
         if handle is None:
+            if self._finished or self._stop_requested:
+                self._start_authorized = self._activation_requested = False
             return
+        self._start_authorized = self._activation_requested = False
         self._stopping_handle = handle
         self.metrics["worker_stop_succeeded"] = False
         started = time.perf_counter()
@@ -811,18 +1016,42 @@ class ReplaySession:
         # so recovery cannot silently multiply the configured session allowance.
         estimate = (spec["max_duration_seconds"] + 330) * MAX_WORKER_RATE * spec["gpu_workers"]
         if estimate > spec["max_estimated_cost_usd"]:
+            self._start_authorized = False
             self._finished = True
             self._finished_reason = "session_budget_reached"
             self._set_state("stopped", self._finished_reason)
             return
-        self._reserved_compute_usd += estimate
-        self.metrics["reserved_compute_usd"] = self._reserved_compute_usd
+        if self._prepared_config is None:
+            self._reserved_compute_usd += estimate
+            self.metrics["reserved_compute_usd"] = self._reserved_compute_usd
         self._set_state("starting")
         await self._control_rpc(self.control())
+        if self._prepared_config is not None:
+            if not self._start_authorized or not self.director.auto_enabled:
+                self._set_state('disabled')
+                return
+            if not self.control()['active']:
+                self._set_state('waiting')
+                return
+            spec = self.worker_spec()
+            estimate = (spec['max_duration_seconds'] + 330) * MAX_WORKER_RATE * spec['gpu_workers']
+            if estimate > spec['max_estimated_cost_usd']:
+                self._start_authorized = False
+                self._set_state('stopped', 'session_budget_reached')
+                return
+            self._reserved_compute_usd += estimate
+            self.metrics['reserved_compute_usd'] = self._reserved_compute_usd
+        self._activation_requested = False
+        self._start_authorized = False
         # Shield the submitted RPC: cancellation cannot stop a running thread.
         # Retaining its task lets shutdown recover and cancel the owned handle.
         self._start_inflight = asyncio.create_task(asyncio.to_thread(self.bridge.start, spec))
-        self._handle = await asyncio.shield(self._start_inflight)
+        try:
+            self._handle = await asyncio.shield(self._start_inflight)
+        except BaseException:
+            if self._start_inflight.done():
+                self._start_inflight = None
+            raise
         self.metrics["worker_stop_succeeded"] = False
         self._start_inflight = None
         self._sources_changed = False
@@ -831,6 +1060,8 @@ class ReplaySession:
 
     async def _control_tick(self):
         now = self.monotonic()
+        if self._activation_requested and not self._controller_report_pending:
+            await self._activate_prepared_monitoring()
         if self.registry.needs_refresh():
             try:
                 self.sources = await asyncio.to_thread(self.registry.resolve)
@@ -845,6 +1076,11 @@ class ReplaySession:
                 and now - self._monitor_started_at >= self.config.max_duration_seconds):
             self._finished = True
         fresh = self.last_report_at is not None and now - self.last_report_at < self.config.heartbeat_seconds
+        if (self._controller_report_pending and fresh
+                and not (self._stop_requested or self._finished or self._ended)):
+            # The previous report remains the worker's only permit until its
+            # original expiry. A handoff itself never creates another GPU input.
+            return
         paused_idle = (self._worker_ready and self._ready_at is not None
                        and now - self._ready_at > self.config.pause_idle_seconds
                        and self._paused_at is not None
@@ -869,6 +1105,8 @@ class ReplaySession:
             if not fresh or self._finished or self._ended or paused_idle:
                 return
         if self._handle is None:
+            if self._prepared_config is not None and not self._start_authorized:
+                return
             if (self._monitor_started_at is not None
                     and self.config.max_duration_seconds - (now - self._monitor_started_at) < 5):
                 self._finished = True
@@ -876,7 +1114,8 @@ class ReplaySession:
                 return
             if self.state == "paused" and not self.playing:
                 return
-            if self._restarts > self.config.max_restarts or now < self._retry_at:
+            explicit_start = self._prepared_config is not None and self._start_authorized
+            if (self._restarts > self.config.max_restarts and not explicit_start) or now < self._retry_at:
                 return
             await self._start_worker()
         else:
@@ -995,8 +1234,8 @@ class ReplaySession:
         return emitted
 
     def _evaluate_director(self):
-        if (self._finished or self._stop_requested or self._closing
-                or self.state not in ("running", "degraded", "paused")):
+        if (self._finished or self._stop_requested or self._closing or self._controller_report_pending
+                or not self.auto_available):
             return False
         decision = self.director.decide(now=self.now(), playback_position=self.position, commit=False)
         if decision is None:

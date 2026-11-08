@@ -34,14 +34,14 @@ if modal.is_local():
         .pip_install("torch==2.11.0", "torchvision==0.26.0",
                      index_url="https://download.pytorch.org/whl/cu130")
         .pip_install_from_requirements(str(PACKAGE / "requirements-worker.txt"))
-        .add_local_file(str(wheel), "/opt/runtime/matchpulse-0.1.0-py3-none-any.whl", copy=True)
-        .run_commands("python -m pip install --no-deps /opt/runtime/matchpulse-0.1.0-py3-none-any.whl")
+        .add_local_file(str(wheel), "/opt/runtime/" + wheel.name, copy=True)
+        .run_commands("python -m pip install --no-deps /opt/runtime/" + wheel.name)
         .add_local_file(str(weights), "/opt/models/yolo26s.pt", copy=True)
         .env({"PYTHONPATH": "/opt/client", "YOLO_CONFIG_DIR": "/tmp/matchpulse-inference-ultralytics",
               "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
               "NUMEXPR_NUM_THREADS": "1"})
         .add_local_dir(str(PACKAGE), "/opt/client/backend/ml_inference",
-                       ignore=["tests/**", "runtime/**", "artifacts/**", ".venv*/**",
+                       ignore=["tests/**", "**/*.whl", "artifacts/**", ".venv*/**",
                                "**/__pycache__/**", "**/*.pyc", ".pytest_cache/**"])
     )
 else:
@@ -228,25 +228,24 @@ class ClassifierWorker:
 
     @modal.enter()
     def load(self):
-        from backend.ml_inference.classifiers import (
-            ResearchInterestScorer,
-            validate_replay_classifier,
-        )
+        from backend.ml_inference.classifiers import load_replay_scorer
 
         root = Path("/models").resolve()
         target = (root / self.checkpoint_name).resolve()
         if not target.is_relative_to(root) or target == root:
             raise ValueError("Classifier path must remain inside the inference model Volume")
         models.reload()
-        self.scorer = ResearchInterestScorer(target, device="cpu")
-        self.readiness = validate_replay_classifier(self.scorer, model_version=self.checkpoint_name)
+        self.scorer = load_replay_scorer(target, model_version=self.checkpoint_name, device="cpu")
+        self.readiness = self.scorer.readiness
 
     @modal.method()
     def ready(self):
         return self.readiness
 
     @modal.method()
-    def predict(self, features):
+    def predict(self, features, endpoint_seconds=None, half=1):
+        if self.scorer.audio_contract == 'sampleclock-v3':
+            return self.scorer.predict_scores(features, endpoint_seconds=endpoint_seconds, half=half)
         return self.scorer.predict_scores(features)
 
 
@@ -293,8 +292,7 @@ class ReplayWorker:
         self._scorer_phase = 'load'
         from backend.ml_inference.classifiers import (
             MockInterestScorer,
-            ResearchInterestScorer,
-            validate_replay_classifier,
+            load_replay_scorer,
         )
 
         if spec['mode'] == 'features_mock':
@@ -310,13 +308,18 @@ class ReplayWorker:
             self._scorer_phase = 'volume_reload'
             models.reload()
             self._scorer_phase = 'load'
-            scorer = ResearchInterestScorer(target, device='cpu').prepare()
+            scorer = load_replay_scorer(target, model_version=spec['model_version'], device='cpu')
             self._scorer_phase = 'validate'
-            validate_replay_classifier(scorer, model_version=spec['model_version'])
+            if scorer.readiness.get('model_version') != spec['model_version']:
+                raise ValueError('Loaded model version does not match the session')
             if len(self.classifiers) >= 2:
                 self.classifiers.pop(next(iter(self.classifiers)))
             self.classifiers[str(target)] = scorer
-        return self.classifiers[str(target)]
+        scorer = self.classifiers[str(target)]
+        self._scorer_phase = 'validate'
+        if scorer.readiness.get('model_version') != spec['model_version']:
+            raise ValueError('Loaded model version does not match the session')
+        return scorer
 
     @modal.method()
     def run(self, spec):
@@ -377,7 +380,9 @@ class ReplayWorker:
     def validate_sources(self, spec):
         from backend.ml_inference.replay_validation import validate_direct_sources
 
-        return validate_direct_sources(spec, self.detector, self.detector_config, self.runtime)
+        scorer = self._scorer(spec)
+        return validate_direct_sources(spec, self.detector, self.detector_config, self.runtime,
+                                       audio_contract=getattr(scorer, 'audio_contract', 'legacy-gru'))
 
     @modal.asgi_app(requires_proxy_auth=True)
     def web(self):

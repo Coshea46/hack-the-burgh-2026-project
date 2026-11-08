@@ -1,4 +1,4 @@
-"""Opt-in MatchPulse inference. Importing this package never contacts Modal."""
+"""Opt-in Touchline inference. Importing this package never contacts Modal."""
 
 from .api import select_best_match, select_best_match_video_only
 from .config import InferenceConfig

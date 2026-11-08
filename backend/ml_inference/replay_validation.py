@@ -2,9 +2,18 @@
 
 import time
 from collections import deque
+from contextlib import nullcontext
+
+from .replay_audio import (
+    DECODER_SHA256,
+    LEGACY_AUDIO,
+    SAMPLECLOCK_AUDIO,
+    validate_audio_contract,
+    verify_reference_decoder,
+)
 
 
-def validate_direct_sources(spec, detector, detector_config, runtime):
+def validate_direct_sources(spec, detector, detector_config, runtime, *, audio_contract=LEGACY_AUDIO):
     import numpy as np
 
     from .incremental import IncrementalMatchFeatures, fresh_reference_window
@@ -12,6 +21,8 @@ def validate_direct_sources(spec, detector, detector_config, runtime):
     from .replay_media import MediaCursor
 
     validate_session(spec)
+    validate_audio_contract(audio_contract)
+    audio_options = {} if audio_contract == LEGACY_AUDIO else {'audio_contract': audio_contract}
     if len(spec['matches']) > 2:
         raise ValueError('Equivalence proof is bounded to two real sources')
     started = time.perf_counter()
@@ -20,8 +31,8 @@ def validate_direct_sources(spec, detector, detector_config, runtime):
     for source in spec['matches']:
         key, offset = source['match_id'], float(source.get('offset_seconds', 0))
         pipeline = IncrementalMatchFeatures(key, detector, detector_config=detector_config,
-                                           timeline_origin_seconds=offset)
-        cursor = MediaCursor(source['source_url'], offset_seconds=offset)
+                                           timeline_origin_seconds=offset, **audio_options)
+        cursor = MediaCursor(source['source_url'], offset_seconds=offset, **audio_options)
         history = deque(maxlen=75)
         try:
             for end_index in (75, 105, 135):
@@ -36,15 +47,40 @@ def validate_direct_sources(spec, detector, detector_config, runtime):
                     history.extend(samples)
                 window_start, window_end = (end_index - 75) / 15, end_index / 15
                 audio = cursor.audio_window(window_start, window_end)
-                if float(np.sqrt(np.mean(audio.astype(np.float64) ** 2))) < 1e-5:
+                finite_pcm = (audio[np.isfinite(audio)].astype(np.float64)
+                              if audio is not None else np.empty(0))
+                rms = float(np.sqrt(np.mean(finite_pcm ** 2))) if finite_pcm.size else 0.0
+                if rms < 1e-5:
                     raise ValueError('Full-audio proof requires non-silent real source audio')
+                reference_audio, audio_pcm_equal, pcm_mask_equal = audio, True, True
+                if audio_contract == SAMPLECLOCK_AUDIO:
+                    # Validation alone reopens the exact frozen decoder. The
+                    # production reader remains persistent and never reruns YOLO.
+                    import av
+                    from matchpulse.research.core_audio import decode_aligned_audio
+
+                    capture = getattr(getattr(av, 'logging', None), 'Capture', None)
+                    try:
+                        with capture(local=True) if capture else nullcontext():
+                            reference_audio = decode_aligned_audio(
+                                source['source_url'], start_seconds=offset + window_start,
+                                end_seconds=offset + window_end,
+                                video_origin_seconds=cursor.metadata['video_origin_seconds'],
+                                decoder_path=verify_reference_decoder()).pcm
+                    except Exception as exc:  # noqa: BLE001 -- decoder errors may contain private URLs.
+                        raise RuntimeError(f'Frozen reference audio decode failed ({type(exc).__name__})') from None
+                    pcm_mask_equal = bool(reference_audio is not None and
+                        np.array_equal(np.isfinite(audio), np.isfinite(reference_audio)))
+                    audio_pcm_equal = bool(pcm_mask_equal and
+                        np.allclose(audio, reference_audio, atol=2e-6, rtol=1e-5, equal_nan=True))
                 t = time.perf_counter()
                 features = pipeline.assemble(end_index, audio)
                 assembly_seconds = time.perf_counter() - t
                 actual = pipeline.last_result
                 expected = fresh_reference_window(detector, [s.rgb for s in history],
-                    [s.source_timestamp for s in history], audio,
-                    window_start_seconds=offset + window_start, detector_config=detector_config)
+                    [s.source_timestamp for s in history], reference_audio,
+                    window_start_seconds=offset + window_start, detector_config=detector_config,
+                    **audio_options)
                 if time.perf_counter() >= deadline:
                     raise TimeoutError('Bounded direct-media validation deadline reached')
                 close = np.isclose(features, expected.features, atol=2e-5, rtol=1e-5)
@@ -63,14 +99,23 @@ def validate_direct_sources(spec, detector, detector_config, runtime):
                     'ball_equal': bool(np.allclose(features[:, 198:205], expected.features[:, 198:205], atol=2e-5, rtol=1e-5)),
                     'camera_equal': bool(np.allclose(features[:, 205:210], expected.features[:, 205:210], atol=2e-5, rtol=1e-5)),
                     'audio_equal': bool(np.array_equal(features[:, 210:215], expected.features[:, 210:215])),
+                    'audio_core5_close': bool(np.allclose(features[:, 210:215], expected.features[:, 210:215],
+                                                          atol=2e-6, rtol=1e-5)),
+                    'audio_availability_exact': bool(np.array_equal(features[:, 214], expected.features[:, 214])),
+                    'audio_pcm_matches_frozen_decoder': audio_pcm_equal,
+                    'audio_pcm_availability_exact': pcm_mask_equal,
+                    'audio_contract': audio_contract,
+                    'audio_decoder_sha256': DECODER_SHA256 if audio_contract == SAMPLECLOCK_AUDIO else None,
                     'audio_available_intervals': int(features[:, 214].sum()),
-                    'audio_rms': float(np.sqrt(np.mean(audio.astype(np.float64) ** 2))),
+                    'audio_pcm_finite_fraction': float(np.isfinite(audio).mean()),
+                    'audio_rms': rms,
                     'new_detector_frames': actual.diagnostics['detector_frames_inferred'],
                     'detector_cache_hits': actual.diagnostics['detector_cache_hits'],
                     'incremental_timings': actual.timings, 'reference_timings': expected.timings,
                     'window_assembly_seconds': assembly_seconds,
                     'cache': pipeline.stats, 'reader': cursor.stats}
-                record['passed'] = bool(close.all() and slot_equal and interpolation_equal and record['teams_equal'])
+                record['passed'] = bool(close.all() and slot_equal and interpolation_equal and record['teams_equal']
+                    and audio_pcm_equal and record['audio_core5_close'] and record['audio_availability_exact'])
                 results.append(record)
                 if not record['passed']:
                     return {'passed': False, 'runtime': runtime, 'windows': results,

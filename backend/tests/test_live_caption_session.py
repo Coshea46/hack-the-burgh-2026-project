@@ -41,6 +41,7 @@ async def setup(*, config=None, worker=None, registry=None):
     worker = worker or CaptionWorker()
     session = await ReplaySession(registry or SourceRegistry.from_env({"MATCHPULSE_MATCH_COUNT": "2"}),
         config=config or SessionConfig(), bridge=FakeBridge(), caption_worker=worker,
+        caption_max_audio_seconds=30, caption_max_cost_usd=.01,
         now=clock, monotonic=clock, session_id="session", publish=published.append).initialize()
     session.connect("owner")
     return session, worker, clock, published
@@ -400,9 +401,9 @@ def test_forced_or_unconfirmed_child_stop_is_not_reported_as_confirmed():
 
 
 @pytest.mark.parametrize("settings", [{"MATCHPULSE_CAPTIONS_ENABLED": "invalid"},
-                                     {"MATCHPULSE_CAPTION_MAX_AUDIO_SECONDS": "31"},
-                                     {"MATCHPULSE_CAPTION_BUDGET_USD": "0.02"}])
-def test_main_live_feature_flag_and_smoke_caps_are_strict(monkeypatch, settings):
+                                     {"MATCHPULSE_CAPTION_MAX_AUDIO_SECONDS": "28801"},
+                                     {"MATCHPULSE_CAPTION_BUDGET_USD": "3.601"}])
+def test_main_live_feature_flag_and_authorized_caps_are_strict(monkeypatch, settings):
     monkeypatch.setattr("backend.main.load_local_environment", lambda: 0)
     for name, value in settings.items():
         monkeypatch.setenv(name, value)

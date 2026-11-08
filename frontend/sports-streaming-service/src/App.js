@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import './App.css';
 import './Platform.css';
-import { FEEDS } from './feeds';
-import VideoTile from './components/VideoTile';
+import { FEEDS, getVideoUrl, sourceOffset } from './feeds';
 import { Activity, Moon, Pause, Play, Sun } from 'lucide-react';
-import MainPlayer from './components/MainPlayer';
+import PersistentMatchPlayer from './components/PersistentMatchPlayer';
 import { withViewTransition } from './viewTransition';
 import useBackendSocket from './useBackendSocket';
 import { isUnavailableFallback, readSession, validRecommendation } from './replayProtocol';
@@ -15,6 +14,7 @@ import NewsPage from './components/NewsPage';
 import CommentaryCaptions from './components/CommentaryCaptions';
 import ReplayScore from './components/ReplayScore';
 import useLiveCaptions from './useLiveCaptions';
+import useAudioOwnership from './useAudioOwnership';
 
 // After a manual pick, ignore the backend's switches for this long.
 export const MANUAL_HOLD_MS = 30000;
@@ -29,6 +29,10 @@ function App() {
   const [director, setDirector] = useState(null);
   const [pendingMode, setPendingMode] = useState(null);
   const [modeNotice, setModeNotice] = useState('');
+  const [claimPending, setClaimPending] = useState(false);
+  const [controlNotice, setControlNotice] = useState('');
+  const [audioEnabled, setAudioEnabled] = useState(false);
+  const [claimedAudio, setClaimedAudio] = useState(null);
   const [activePage, setActivePage] = useState(pageFromHash);
   const [uiNow, setUiNow] = useState(Date.now());
   const [focusedId, setFocusedId] = useState(FEEDS[0].id);
@@ -44,6 +48,8 @@ function App() {
   const clock = useRef({ time: 0, playing: true, rate: 1, muted: false, volume: 1, stalled: true, available: true });
   const send = useRef(() => false);
   const session = useRef(null);
+  const pendingClaim = useRef(null);
+  const roleConfirmed = useRef(false);
   const feedsRef = useRef(feeds);
   const focusedRef = useRef(focusedId);
   const autoRef = useRef(autoSwitch);
@@ -57,6 +63,13 @@ function App() {
   const directorRef = useRef(null);
   const headingRef = useRef(null);
   const mainVideo = useRef(null);
+  const players = useRef(new Map());
+  const registerPlayer = useCallback((matchId, video) => {
+    if (video) players.current.set(matchId, video);
+    else players.current.delete(matchId);
+  }, []);
+  const audio = useAudioOwnership({ media: mainVideo, clock, sourceId: focusedId, enabled: audioEnabled });
+  const requestOwnedAudio = audio.requestAudio;
   const previousId = useRef(focusedId);
   const switchSource = useRef('user');
   const synced = useRef(false);
@@ -115,6 +128,40 @@ function App() {
     return () => clearTimeout(timer);
   }, [pendingMode]);
 
+  useEffect(() => {
+    if (!claimPending) return undefined;
+    const timer = setTimeout(() => {
+      pendingClaim.current = null;
+      setClaimPending(false);
+      setControlNotice('Control was not confirmed. Try again.');
+    }, 8000);
+    return () => clearTimeout(timer);
+  }, [claimPending]);
+
+  useEffect(() => {
+    if (!claimedAudio) return;
+    if (session.current?.session_id === claimedAudio && session.current.controls_enabled === true && audioEnabled) {
+      setClaimedAudio(null);
+      void requestOwnedAudio();
+    } else if (session.current?.session_id !== claimedAudio || session.current?.controls_enabled === false) {
+      setClaimedAudio(null);
+    }
+  }, [claimedAudio, audioEnabled, requestOwnedAudio]);
+
+  const claimControl = () => {
+    const current = session.current;
+    if (pendingClaim.current || connection !== 'connected' || !current || current.controls_enabled !== false
+      || current.can_claim_control !== true) return;
+    pendingClaim.current = { session_id: current.session_id };
+    setClaimPending(true);
+    setControlNotice('');
+    if (!send.current({ type: 'claim_control', session_id: current.session_id })) {
+      pendingClaim.current = null;
+      setClaimPending(false);
+      setControlNotice('The request could not be sent. Reconnect and try again.');
+    }
+  };
+
   const updateDirector = (value, registered) => {
     const next = readDirector(value, registered);
     if (!next) return null;
@@ -156,7 +203,7 @@ function App() {
 
   const acknowledge = useCallback((recommendation) => {
     const current = session.current;
-    if (!current || recommendation.session_id !== current.session_id
+    if (!current || current.controls_enabled === false || recommendation.session_id !== current.session_id
       || recommendation.model_version !== current.model_version
       || recommendation.clock_epoch !== current.playback.clock_epoch
       || clock.current.stalled || clock.current.available === false) return;
@@ -207,7 +254,7 @@ function App() {
 
   const switchTo = (id, source = 'user', recommendation = null) => {
     const priorAck = pendingAck.current;
-    const request = ++transition.current;
+    transition.current += 1;
     pendingSelection.current = null;
     pendingAck.current = null;
     if (id === focusedRef.current) {
@@ -219,20 +266,40 @@ function App() {
       return;
     }
     pendingSelection.current = { id, source };
-    withViewTransition(() => {
-      if (request !== transition.current) return;
-      clock.current.sample?.();
-      if (recommendation && (!autoRef.current || Date.now() < holdRef.current
-        || !validRecommendation(recommendation, { ...session.current, sequence: recommendation.sequence - 1 }, clock.current))) {
+    clock.current.sample?.();
+    if (recommendation && (!autoRef.current || Date.now() < holdRef.current
+      || !validRecommendation(recommendation, { ...session.current, sequence: recommendation.sequence - 1 }, clock.current))) {
+      pendingSelection.current = null;
+      return;
+    }
+    if (recommendation) {
+      const feed = feedsRef.current.find((item) => item.id === id);
+      const video = feed && players.current.get(feed.cameraId);
+      const actualTime = video ? Math.max(0, video.currentTime - sourceOffset(feed)) : NaN;
+      // Never replace visible football with an automatic loading screen.
+      // An unready proposal is discarded; a future fresh prediction can retry.
+      if (!video || video.readyState < 2 || video.seeking
+        || video.matchpulseReadySource !== `${getVideoUrl(feed)}\n${feed.cameraId}`
+        || Math.abs(actualTime - clock.current.time) > 0.15
+        || !validRecommendation(recommendation, { ...session.current, sequence: recommendation.sequence - 1 },
+          { ...clock.current, time: actualTime, stalled: false, available: true })) {
         pendingSelection.current = null;
         return;
       }
-      switchSource.current = source;
-      focusedRef.current = id;
-      pendingSelection.current = null;
-      pendingAck.current = recommendation ? { ...recommendation, announce: true } : null;
-      setFocusedId(id);
-    });
+    }
+    switchSource.current = source;
+    // Promote the already-decoding destination. Silence the old player before
+    // its focus changes, without changing the viewer's mute preference.
+    if (mainVideo.current) {
+      mainVideo.current.matchpulseAudioOwned = false;
+      mainVideo.current.muted = true;
+    }
+    delete clock.current.sample;
+    clock.current.stalled = true;
+    focusedRef.current = id;
+    pendingSelection.current = null;
+    pendingAck.current = recommendation ? { ...recommendation, announce: true } : null;
+    setFocusedId(id);
   };
 
   // A manual pick wins over the backend for MANUAL_HOLD_MS.
@@ -266,6 +333,35 @@ function App() {
         setDirector(null);
       }
       const firstSession = !session.current;
+      const claimed = pendingClaim.current?.session_id === next.session_id && next.controls_enabled === true;
+      const lostControl = session.current?.controls_enabled === true && next.controls_enabled === false;
+      if (next.controls_enabled === false) audio.releaseAudio();
+      if (lostControl || claimed) {
+        transition.current += 1;
+        pendingSelection.current = null;
+        pendingAck.current = null;
+        latestRecommendation.current = null;
+        dirtyControls.current = { auto: false, select: false };
+        pendingModeRef.current = null;
+        setPendingMode(null);
+        setModeNotice('');
+      }
+      if (pendingClaim.current && (next.session_id !== pendingClaim.current.session_id || claimed)) {
+        pendingClaim.current = null;
+        setClaimPending(false);
+        setControlNotice('');
+      }
+      if (claimed) {
+        // Adopt the authoritative settings. Observer-local picks/preferences must
+        // not replay stale Auto/mode commands when control changes hands.
+        modeRequestSession.current = next.session_id;
+        setClaimedAudio(next.session_id);
+      }
+      roleConfirmed.current = true;
+      setAudioEnabled(next.controls_enabled === true);
+      const freshStartCapability = next.mode === 'disabled' && typeof next.auto_can_start === 'boolean'
+        && (firstSession || session.current.session_id !== next.session_id);
+      if (freshStartCapability) dirtyControls.current.auto = false;
       next.feeds.forEach((feed) => {
         const previous = feedsRef.current.find((item) => item.cameraId === feed.cameraId);
         if (previous?.url !== feed.url) unavailable.current.delete(feed.cameraId);
@@ -281,6 +377,7 @@ function App() {
       setSessionState(next);
       setBackendError('');
       const nextDirector = updateDirector(next.director, next.feeds);
+      if (claimed && nextDirector) modePreference.current = nextDirector.mode;
       if (nextDirector && modeRequestSession.current !== next.session_id && next.controls_enabled !== false) {
         modeRequestSession.current = next.session_id;
         if (modePreference.current && modePreference.current !== nextDirector.mode) requestMode(modePreference.current);
@@ -293,18 +390,18 @@ function App() {
           setSeekTo({ time: next.playback.position });
         }
       }
-      const manualMode = (typeof next.auto_enabled === 'boolean' && !dirtyControls.current.auto) ? !next.auto_enabled : !autoRef.current;
       const preservedId = pendingSelection.current?.id ?? focusedRef.current;
-      const preserved = next.feeds.find((feed) => feed.id === preservedId && (feed.healthy || manualMode));
+      const preserved = next.feeds.find((feed) => feed.id === preservedId);
       const selected = next.feeds.find((feed) => feed.cameraId === next.current_match_id && feed.healthy);
       const target = (firstSession && !dirtyControls.current.select ? selected : preserved)
         || preserved || selected || next.feeds.find((feed) => feed.healthy) || next.feeds[0];
       if (target.id !== pendingSelection.current?.id) switchTo(target.id, 'auto');
       if (dirtyControls.current.auto && next.controls_enabled !== false) {
         dirtyControls.current.auto = !send.current({ type: 'auto', session_id: next.session_id, enabled: autoRef.current });
-      } else if (typeof next.auto_enabled === 'boolean') {
-        autoRef.current = next.auto_enabled;
-        setAutoSwitch(next.auto_enabled);
+      } else if (typeof next.auto_requested === 'boolean' || typeof next.auto_enabled === 'boolean') {
+        const requested = typeof next.auto_requested === 'boolean' ? next.auto_requested : next.auto_enabled;
+        autoRef.current = requested;
+        setAutoSwitch(requested);
       }
       if (dirtyControls.current.select && next.controls_enabled !== false) {
         dirtyControls.current.select = !send.current({ type: 'select', session_id: next.session_id,
@@ -337,7 +434,15 @@ function App() {
       switchTo(target.id, 'auto', message);
     } else if (message.type === 'error' && message.code === 'viewer_in_use') {
       if (session.current) session.current.controls_enabled = false;
+      setSessionState((previous) => previous ? { ...previous, controls_enabled: false } : previous);
+      setAudioEnabled(false);
+      audio.releaseAudio();
       setBackendError('Viewing only');
+    } else if (message.type === 'error' && pendingClaim.current
+      && ['session_mismatch', 'viewer_not_registered', 'session_closed', 'unknown_message'].includes(message.code)) {
+      pendingClaim.current = null;
+      setClaimPending(false);
+      setControlNotice('This tab could not take control. Reconnect and try again.');
     } else if (message.type === 'error' && message.code === 'invalid_director_mode') {
       pendingModeRef.current = null;
       setPendingMode(null);
@@ -346,12 +451,23 @@ function App() {
   }, undefined, send);
 
   useEffect(() => {
-    if (connection !== 'connected') modeRequestSession.current = null;
+    if (connection !== 'connected') {
+      modeRequestSession.current = null;
+      roleConfirmed.current = false;
+      if (pendingClaim.current) {
+        pendingClaim.current = null;
+        setClaimPending(false);
+        setControlNotice('The replay connection was lost. Reconnect before taking control.');
+      }
+      setClaimedAudio(null);
+      setAudioEnabled(connection === 'offline' && session.current?.controls_enabled !== false);
+    } else setAudioEnabled(roleConfirmed.current && session.current?.controls_enabled === true);
     captionConnection(connection === 'connected');
   }, [connection, captionConnection]);
 
   const toggleAuto = () => {
-    const enabled = !autoRef.current;
+    if (!autoToggleable) return;
+    const enabled = autoCanStart ? true : !autoRef.current;
     if (!enabled) {
       transition.current += 1;
       pendingSelection.current = null;
@@ -373,16 +489,46 @@ function App() {
     if (event.key === 'Escape') document.querySelector('.filmstrip .tile:not([hidden])[role="button"]')?.focus();
   };
 
-  const held = autoSwitch && holdUntil > 0;
-  const autoLabel = !autoSwitch ? 'Auto off' : held ? 'Auto paused' : 'Auto';
-  const autoTitle = !autoSwitch ? 'Turn on automatic switching'
+  const autoAvailable = connection === 'connected' && Boolean(sessionState)
+    && ['real', 'features_mock'].includes(sessionState.mode)
+    && (sessionState.auto_available ?? ['running', 'degraded', 'paused'].includes(sessionState.state));
+  const autoCanStart = connection === 'connected' && sessionState?.auto_can_start === true;
+  const autoStarting = connection === 'connected' && sessionState?.auto_starting === true;
+  const autoToggleable = connection === 'connected' && sessionState?.controls_enabled !== false
+    && (autoAvailable || autoCanStart || autoStarting);
+  const held = autoAvailable && autoSwitch && holdUntil > 0;
+  const autoLabel = !(autoAvailable || autoCanStart || autoStarting) ? 'Auto unavailable' : autoStarting && autoSwitch ? 'Auto starting'
+    : !autoAvailable || !autoSwitch ? 'Auto off' : held ? 'Auto paused' : 'Auto';
+  const startReasons = {
+    credentials_unavailable: 'Auto Director needs inference credentials on the backend.',
+    model_unavailable: 'Auto Director could not load the configured model. Ask the site operator to check the model setup.',
+    budget_exhausted: 'The monitoring allowance has been used.',
+    session_expired: 'The monitoring session allowance has ended.',
+    source_ended: 'The replay has ended.',
+    not_prepared: 'Monitoring is not enabled on this backend.',
+    closing: 'The backend is shutting down.',
+  };
+  const autoTitle = connection === 'connected' && sessionState?.controls_enabled === false
+    ? sessionState.can_claim_control === true ? 'Another tab controls this replay. Use this tab to take control.'
+      : 'Another tab controls this replay. Restart the backend to enable control handoff.'
+    : !autoToggleable ? startReasons[sessionState?.auto_start_reason] || 'Auto Director needs a ready monitoring session'
+    : autoCanStart ? 'Start a bounded real-model monitoring session'
+    : autoStarting && autoSwitch ? 'Monitoring is starting. Click to turn automatic switching off.'
+    : !autoSwitch ? 'Turn on automatic switching'
     : held ? 'Paused after your pick; resumes shortly. Click to turn off'
       : 'Automatically switching to the most interesting match. Click to turn off';
-  const inferenceBuffering = connection === 'connected' && ['waiting', 'starting'].includes(sessionState?.state);
+  const waitingForStart = sessionState?.auto_can_start === true && sessionState?.auto_starting !== true;
+  const inferenceBuffering = connection === 'connected' && !waitingForStart
+    && (sessionState?.auto_starting === true || ['waiting', 'starting'].includes(sessionState?.state));
   const inferenceLabel = backendError || (sessionState?.controls_enabled === false ? 'Viewing only'
     : inferenceBuffering ? 'Starting inference'
     : sessionState && connection !== 'connected' ? 'Inference offline'
+    : autoCanStart ? 'Ready to start monitoring'
+    : startReasons[sessionState?.auto_start_reason] && ['disabled', 'stopped'].includes(sessionState?.state)
+      ? startReasons[sessionState.auto_start_reason]
     : sessionState?.state === 'disabled' ? 'Monitoring off'
+    : sessionState?.state === 'stopped' ? 'Monitoring session ended'
+    : sessionState?.state === 'ended' ? 'Replay ended'
       : ['failed', 'error', 'unavailable'].includes(sessionState?.state) ? 'Inference unavailable'
       : sessionState?.mode === 'features_mock' ? 'Mock scores'
         : sessionState?.mode === 'real' ? 'Trained model' : 'No inference session');
@@ -418,8 +564,8 @@ function App() {
     <div className="app" data-theme={theme}>
       <a className="skip-link" href="#matches" onClick={(event) => { event.preventDefault(); document.getElementById('matches')?.focus(); }}>Skip to content</a>
       <header className="app-header">
-        <a className="brand" href="#watch" onClick={(event) => { event.preventDefault(); navigate('watch'); }} aria-label="MatchPulse home">
-          <span>MatchPulse</span>
+        <a className="brand" href="#watch" onClick={(event) => { event.preventDefault(); navigate('watch'); }} aria-label="Touchline home">
+          <span>Touchline</span>
         </a>
         <nav className="main-nav" aria-label="Main navigation">
           {[['watch', 'Watch'], ['tables', 'Tables'], ['news', 'News']].map(([id, label]) =>
@@ -437,25 +583,50 @@ function App() {
         <section id="watch" className="player-layout" hidden={activePage !== 'watch'} aria-label="Watch matches">
           <div className="player-heading"><div className="fixture-heading">
             <h1 ref={headingRef} tabIndex={-1} style={{ viewTransitionName: 'match-heading' }}>{focused.label}</h1><ReplayScore feed={focused} mediaRef={mainVideo} />
-          </div></div>
+          </div>
+            {(audio.status === 'other-tab' || audio.pending) && <button type="button" className="theme-toggle audio-ownership"
+              title="Move Touchline audio to this tab"
+              onClick={() => {
+                if (session.current?.controls_enabled === false) claimControl();
+                else void audio.requestAudio();
+              }} disabled={audio.pending || claimPending || (sessionState?.controls_enabled === false && sessionState?.can_claim_control !== true)}>
+              {audio.pending ? 'Switching audio…' : 'Play audio here'}
+            </button>}
+            {audio.status === 'unavailable' && <span className="audio-ownership" role="status">Audio needs a browser with exclusive playback support.</span>}
+          </div>
           <div className="watch-stage">
-            <MainPlayer feed={focused} clock={clock} seekTo={seekTo} onPlayback={reportPlayback} mediaRef={mainVideo}
-          inferenceBuffering={inferenceBuffering}
-          onAvailability={(matchId, available) => {
-            if (available) { unavailable.current.delete(matchId); finishRecommendation(); }
-            else { unavailable.current.add(matchId); pendingAck.current = null; }
-          }} />
+            <div className="filmstrip player-pool" role="region" aria-label="Other matches">
+              {feeds.map((feed) => {
+                const selected = feed.id === focused.id;
+                const index = feeds.filter((item) => item.id !== focused.id).findIndex((item) => item.id === feed.id);
+                return <PersistentMatchPlayer key={feed.cameraId} feed={feed} focused={selected} focusedRef={focusedRef}
+                  registerPlayer={registerPlayer}
+                  clock={clock} seekTo={seekTo} onPlayback={reportPlayback} mediaRef={mainVideo}
+                  inferenceBuffering={inferenceBuffering} audioAllowed={audio.owned && audioEnabled}
+                  previewsPaused={previewsPaused} watching={activePage === 'watch'} onClick={() => pick(feed.id)}
+                  onAvailability={(matchId, available) => {
+                    if (available) { unavailable.current.delete(matchId); finishRecommendation(); }
+                    else { unavailable.current.add(matchId); if (selected) pendingAck.current = null; }
+                  }}
+                  score={scores[feed.cameraId]} scoreKind={sessionState?.mode === 'features_mock' ? 'mock' : 'model'} monitoring={monitoring}
+                  style={selected ? undefined : { '--preview-row': Math.floor(index / 3), '--preview-column': index % 3,
+                    '--preview-row-mobile': Math.floor(index / 2), '--preview-column-mobile': index % 2 }} />;
+              })}
+            </div>
             <div className="watch-sidebar">
               <DirectorPanel director={director} mode={mode} pendingMode={pendingMode} notice={modeNotice} onMode={requestMode}
-              enabled={autoSwitch} held={held} holdUntil={holdUntil} now={now} monitoring={monitoring} matchCount={feeds.length}
-              monitoredCount={feeds.filter((feed) => feed.healthy !== false).length} starting={inferenceBuffering}
+              enabled={autoAvailable && autoSwitch} available={autoAvailable} modelVersion={sessionState?.model_version}
+              canToggle={autoToggleable} requested={autoSwitch}
+              canClaimControl={sessionState?.can_claim_control === true} controlPending={claimPending}
+              controlNotice={controlNotice} onClaimControl={claimControl}
+              held={held} holdUntil={holdUntil} now={now} monitoring={monitoring} matchCount={feeds.length}
+              monitoredCount={feeds.filter((feed) => feed.healthy !== false).length} starting={inferenceBuffering || autoStarting}
               connected={connection === 'connected'} connection={connection} canControl={sessionState?.controls_enabled !== false}
               scoreFresh={scoreFresh} inferenceLabel={inferenceLabel} autoLabel={autoLabel} autoTitle={autoTitle} onToggle={toggleAuto} />
               <CommentaryCaptions feed={focused} mediaRef={mainVideo} live={captions.value} enabled={captions.enabled}
-                onToggle={captions.control} connected={connection === 'connected'} canControl={sessionState?.controls_enabled !== false} />
+                onToggle={captions.control} connected={connection === 'connected'}
+                canControl={sessionState?.controls_enabled !== false} />
             </div>
-          </div>
-          <aside className="alternatives" aria-label="Match selection">
         <div className="strip-toolbar"><h2>Other matches <span>{Math.max(0, feeds.length - 1)}</span></h2>
           <button className="icon-button" aria-label={previewsPaused ? 'Resume previews' : 'Pause previews'}
             title={previewsPaused ? 'Resume previews' : 'Pause previews'} aria-pressed={previewsPaused}
@@ -463,23 +634,15 @@ function App() {
             {previewsPaused ? <Play size={18} aria-hidden="true" /> : <Pause size={18} aria-hidden="true" />}
           </button>
         </div>
-        <div className={`filmstrip ${feeds.length <= 3 ? 'filmstrip--compact' : ''}`} role="region" aria-label="Other matches" style={{ '--match-count': Math.max(1, feeds.length - 1) }}>
-          {feeds.map((feed) => (
-            <VideoTile key={feed.cameraId} feed={feed} hidden={feed.id === focused.id} clock={clock}
-              paused={previewsPaused || activePage !== 'watch'} onClick={() => pick(feed.id)}
-              score={scores[feed.cameraId]} scoreKind={sessionState?.mode === 'features_mock' ? 'mock' : 'model'}
-              monitoring={monitoring} />
-          ))}
-        </div>
         <p className="selection-help">{feeds.length === 1 ? 'No other matches in this replay.' : 'Choose a match to keep it for 30 seconds.'}</p>
-          </aside>
+          </div>
         <p className="watch-disclosure">Replay footage. Scores are relative and experimental, not goal probabilities.</p>
         </section>
         <div id="tables" hidden={activePage !== 'tables'}><TablesPage active={activePage === 'tables'} /></div>
         <div id="news" hidden={activePage !== 'news'}><NewsPage active={activePage === 'news'} /></div>
       </main>
       <div className={`selection-toast ${announcement ? 'is-visible' : ''}`} role="status" aria-live="polite">
-        {announcement && <><Activity size={18} aria-hidden="true" /><span><strong>MatchPulse selected</strong><span>{announcement}</span></span></>}
+        {announcement && <><Activity size={18} aria-hidden="true" /><span><strong>Touchline selected</strong><span>{announcement}</span></span></>}
       </div>
     </div>
   );

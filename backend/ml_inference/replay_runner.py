@@ -53,6 +53,8 @@ def run_replay_session(spec, detector, control, publish, *, scorer,
     validate_session(spec)
     cursor_factory = cursor_factory or MediaCursor
     feature_factory = feature_factory or IncrementalMatchFeatures
+    audio_contract = getattr(scorer, 'audio_contract', 'legacy-gru')
+    contract_options = {'audio_contract': audio_contract} if audio_contract == 'sampleclock-v3' else {}
     session_id = spec['session_id']
     started = time.monotonic()
     duration = float(spec.get('max_duration_seconds', 300))
@@ -72,6 +74,7 @@ def run_replay_session(spec, detector, control, publish, *, scorer,
     last_publish, first_pending = 0.0, None
     last_progress_at, previous_permit = started, None
     initialization_started, startup_complete, has_progress = started, False, False
+    startup_waiting = False
     readers = ThreadPoolExecutor(max_workers=len(spec['matches']), thread_name_prefix='replay-source')
     visual = ThreadPoolExecutor(max_workers=min(4, len(spec['matches'])), thread_name_prefix='replay-visual')
 
@@ -143,7 +146,7 @@ def run_replay_session(spec, detector, control, publish, *, scorer,
             ctx.reader_seconds += time.perf_counter() - before
 
     def open_cursor(source, offset, base_index, original_permit):
-        cursor = cursor_factory(source, offset_seconds=offset, start_index=base_index)
+        cursor = cursor_factory(source, offset_seconds=offset, start_index=base_index, **contract_options)
         try:
             # A seek rounds the first full window up to the two-second grid.
             # Never decode a future base just to release its startup buffer.
@@ -187,7 +190,8 @@ def run_replay_session(spec, detector, control, publish, *, scorer,
             match = {**registered, **source_updates.get(registered['match_id'], {})}
             key = match['match_id']
             features = feature_factory(key, detector, detector_config=detector_config,
-                source_epoch=f'{epoch}:0', timeline_origin_seconds=float(match.get('offset_seconds', 0)))
+                source_epoch=f'{epoch}:0', timeline_origin_seconds=float(match.get('offset_seconds', 0)),
+                **contract_options)
             ctx = _Match(match, features, base_index + 75, processed=base_index,
                          scheduled=base_index, feature_stats=dict(features.stats))
             ctx.future = readers.submit(open_cursor, match['source_url'],
@@ -278,7 +282,14 @@ def run_replay_session(spec, detector, control, publish, *, scorer,
                 last_progress_at = time.monotonic()
                 has_progress = True
             previous_permit = permit
-            if (startup_complete or has_progress) and time.monotonic() - last_progress_at > 30:
+            barrier_was_waiting = startup_waiting
+            startup_waiting = clock.get('startup_waiting', False)
+            if startup_waiting or barrier_was_waiting:
+                # Local readiness can precede the slowest shard by >30s. The
+                # viewer must remain paused until the backend's whole-group
+                # barrier opens; keep that bounded wait out of the pause timer.
+                last_progress_at = time.monotonic()
+            elif (startup_complete or has_progress) and time.monotonic() - last_progress_at > 30:
                 reason = 'paused'
                 break
             # Timestamp the first permission report for each completed endpoint.
@@ -338,7 +349,8 @@ def run_replay_session(spec, detector, control, publish, *, scorer,
             if ready_for_viewer and not startup_complete:
                 startup_complete = True
                 last_progress_at = time.monotonic()
-            if (not startup_complete and time.monotonic() - initialization_started >= min(120, duration)):
+            if ((not startup_complete or startup_waiting or barrier_was_waiting)
+                    and time.monotonic() - initialization_started >= min(120, duration)):
                 return snapshot('error', 'startup_timeout')
             if ready_for_viewer and not scores and time.monotonic() - last_publish >= .5:
                 snapshot('ready')
@@ -434,7 +446,14 @@ def run_replay_session(spec, detector, control, publish, *, scorer,
                 metrics['window_assembly_seconds'] += time.perf_counter() - before
             if tensors:
                 before = time.perf_counter()
-                values = scorer.predict_scores(tensors)
+                if audio_contract == 'sampleclock-v3':
+                    # Predictor timestamps describe the original source, while
+                    # published observation clocks remain replay-relative.
+                    endpoints = {ctx.source['match_id']: float(ctx.source.get('offset_seconds', 0))
+                                 + ctx.next_end / 15 for ctx in completed}
+                    values = scorer.predict_scores(tensors, endpoint_seconds=endpoints, half=1)
+                else:
+                    values = scorer.predict_scores(tensors)
                 classifier_seconds = time.perf_counter() - before
                 metrics['classifier_seconds'] += classifier_seconds
                 produced = time.time()
@@ -462,7 +481,7 @@ def run_replay_session(spec, detector, control, publish, *, scorer,
                 reason = 'all_sources_ended'
                 break
             time.sleep(.01)
-        if reason == 'session_limit' and not startup_complete:
+        if reason == 'session_limit' and (not startup_complete or startup_waiting):
             return snapshot('error', 'startup_timeout')
         return snapshot('stopped', reason)
     except Exception as exc:  # noqa: BLE001 -- sanitize arbitrary detector/decoder exceptions.

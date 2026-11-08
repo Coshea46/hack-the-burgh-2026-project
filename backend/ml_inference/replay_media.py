@@ -16,6 +16,14 @@ from urllib.parse import urlsplit
 
 import numpy as np
 
+from .replay_audio import (
+    DECODER_SHA256,
+    LEGACY_AUDIO,
+    SAMPLECLOCK_AUDIO,
+    clock_tolerance,
+    validate_aligned_pcm,
+    validate_audio_contract,
+)
 from .validation import validate_audio
 
 FPS = 15
@@ -113,7 +121,9 @@ class MediaCursor:
 
     def __init__(self, source_url, *, offset_seconds=0, start_index=0,
                  allow_local=False, max_history_seconds=12,
-                 audio_clock_tolerance_seconds=0.002, av_module=None):
+                 audio_clock_tolerance_seconds=0.002, av_module=None,
+                 audio_contract=LEGACY_AUDIO):
+        self.audio_contract = validate_audio_contract(audio_contract)
         self.offset_seconds = _number(offset_seconds, "offset_seconds")
         if isinstance(start_index, bool) or not isinstance(start_index, Integral) or start_index < 0:
             raise ValueError("start_index must be a nonnegative integer")
@@ -146,7 +156,10 @@ class MediaCursor:
         self._audio_rate = None
         self._audio_clock = None
         self._audio_end = None
+        self._audio_evicted_before = None
         self._audio_max_clock_deviation = 0
+        self._audio_clock_corrections = self._audio_real_discontinuities = 0
+        self._audio_gap_history = deque(maxlen=16)
         self._last_permit = None
         self._primed = False
         self._last_av_error_type = self._last_av_error_phase = None
@@ -170,11 +183,13 @@ class MediaCursor:
             stream.codec_context.thread_count = 1
             self._audio_container = self._av_call(self._av.open, source, timeout=(10, 5),
                                                    _phase='audio_open', **open_options)
-            if not self._audio_container.streams.audio:
+            if not self._audio_container.streams.audio and self.audio_contract == LEGACY_AUDIO:
                 raise MediaTimelineError("Source contains no audio stream")
-            self._audio_stream = self._audio_container.streams.audio[0]
-            self._audio_stream.codec_context.thread_count = 1
-            self._channels = len(self._audio_stream.codec_context.layout.channels)
+            self._audio_stream = (self._audio_container.streams.audio[0]
+                                  if self._audio_container.streams.audio else None)
+            if self._audio_stream is not None:
+                self._audio_stream.codec_context.thread_count = 1
+            self._channels = len(self._audio_stream.codec_context.layout.channels) if self._audio_stream else 1
             if self._channels not in (1, 2):
                 raise MediaTimelineError("Source audio must contain one or two channels")
             initial_source_time = self.offset_seconds + self.next_index / FPS
@@ -182,20 +197,26 @@ class MediaCursor:
             self._av_call(self._video_container.seek, int(video_seek / stream.time_base), stream=stream,
                           backward=True, _phase='video_seek')
             audio_seek = max(0, self._video_origin + initial_source_time - 0.25)
-            self._av_call(self._audio_container.seek, int(audio_seek * self._av.time_base), backward=True,
-                          _phase='audio_seek')
+            if self._audio_stream is not None:
+                self._av_call(self._audio_container.seek, int(audio_seek * self._av.time_base), backward=True,
+                              _phase='audio_seek')
             self._video_frames = iter(self._av_call(self._video_container.decode, self._video_stream))
-            self._audio_frames = iter(self._av_call(self._audio_container.decode, self._audio_stream))
+            self._audio_frames = (iter(self._av_call(self._audio_container.decode, self._audio_stream))
+                                  if self._audio_stream else iter(()))
             self.metadata = {
                 "duration_seconds": duration,
                 "replay_duration_seconds": None if duration is None else max(0.0, duration - self.offset_seconds),
                 "fps": self._fps, "width": self._shape[1], "height": self._shape[0],
                 "max_frame_pixels": MAX_FRAME_PIXELS,
                 "decoder_threads": 1, "open_timeout_seconds": 10, "read_timeout_seconds": 5,
-                "has_audio": True, "audio_channels": self._channels,
-                "audio_sample_rate": getattr(self._audio_stream.codec_context, "sample_rate", None),
+                "has_audio": self._audio_stream is not None, "audio_channels": self._channels,
+                "audio_sample_rate": (getattr(self._audio_stream.codec_context, "sample_rate", None)
+                                      if self._audio_stream else None),
                 "source_offset_seconds": self.offset_seconds,
+                "video_origin_seconds": self._video_origin,
                 "audio_clock_tolerance_seconds": self.audio_clock_tolerance_seconds,
+                "audio_contract": self.audio_contract,
+                "audio_decoder_sha256": DECODER_SHA256 if self.audio_contract == SAMPLECLOCK_AUDIO else None,
             }
         except Exception as exc:
             self.close()
@@ -273,13 +294,19 @@ class MediaCursor:
         return Sample(index, point.rgb, point.timestamp)
 
     def _advance_audio(self, permitted_source_time):
+        if self._audio_stream is None:
+            return
         while self._audio_end is None or self._audio_end < permitted_source_time - 1e-9:
             if self._audio_eof:
+                if self.audio_contract == SAMPLECLOCK_AUDIO:
+                    return
                 raise EOFError("Media audio reached its endpoint")
             try:
                 frame = self._av_call(next, self._audio_frames, _phase='audio_decode')
             except StopIteration:
                 self._audio_eof = True
+                if self.audio_contract == SAMPLECLOCK_AUDIO:
+                    return
                 raise EOFError("Media audio reached its endpoint") from None
             if frame.pts is None or frame.time_base is None:
                 raise MediaTimelineError("Audio frame lacks a presentation timestamp")
@@ -289,11 +316,25 @@ class MediaCursor:
             self._audio_rate = rate
             source_clock = round(float(frame.pts * frame.time_base) * rate)
             clock = source_clock if self._audio_clock is None else self._audio_clock
-            tolerance = max(int(np.ceil(float(frame.time_base) * rate)) + 1,
-                            int(np.ceil(self.audio_clock_tolerance_seconds * rate)))
-            if abs(source_clock - clock) > tolerance:
-                raise MediaTimelineError("Audio presentation timestamp discontinuity")
-            self._audio_max_clock_deviation = max(self._audio_max_clock_deviation, abs(source_clock - clock))
+            error = source_clock - clock
+            if self.audio_contract == SAMPLECLOCK_AUDIO:
+                tolerance = clock_tolerance(self._audio_stream, rate, frame.time_base)
+                if abs(error) > tolerance:
+                    # Preserve a genuine missing/overlapping interval on the
+                    # source clock. Never stretch samples or replace it by zero.
+                    self._audio_real_discontinuities += 1
+                    self._audio_gap_history.append({'at_seconds': source_clock / rate - self._video_origin,
+                                                    'gap_seconds': error / rate})
+                    clock = source_clock
+                elif error:
+                    self._audio_clock_corrections += 1
+                    self._audio_max_clock_deviation = max(self._audio_max_clock_deviation, abs(error))
+            else:
+                tolerance = max(int(np.ceil(float(frame.time_base) * rate)) + 1,
+                                int(np.ceil(self.audio_clock_tolerance_seconds * rate)))
+                if abs(error) > tolerance:
+                    raise MediaTimelineError("Audio presentation timestamp discontinuity")
+                self._audio_max_clock_deviation = max(self._audio_max_clock_deviation, abs(error))
             data = self._av_call(_native_pcm, frame)
             if data.shape[1] != self._channels:
                 raise MediaTimelineError("Audio channel layout changes inside a source epoch")
@@ -303,12 +344,17 @@ class MediaCursor:
                 self._audio_chunks.append(_AudioChunk(clock, data))
                 self._audio_bytes += data.nbytes
                 self._audio_clock, self._audio_end = next_clock, end
-                cutoff = end - self.max_history_seconds
+                # A packet after a real gap may be far beyond the permit. It
+                # is lookahead, not permission to evict the preceding waveform.
+                history_end = min(end, permitted_source_time) if self.audio_contract == SAMPLECLOCK_AUDIO else end
+                cutoff = history_end - self.max_history_seconds
                 while self._audio_chunks and (
                     (self._audio_chunks[0].start + len(self._audio_chunks[0].data)) / rate
                         - self._video_origin <= cutoff
                 ):
-                    self._audio_bytes -= self._audio_chunks.popleft().data.nbytes
+                    removed = self._audio_chunks.popleft()
+                    self._audio_bytes -= removed.data.nbytes
+                    self._audio_evicted_before = (removed.start + len(removed.data)) / rate
                 if self._audio_bytes > MAX_AUDIO_BYTES:
                     self._audio_chunks.clear()
                     self._audio_bytes = 0
@@ -396,10 +442,18 @@ class MediaCursor:
             if self._last_permit is None or end > self._last_permit + 1e-8:
                 raise MediaTimelineError("Audio window extends beyond the permitted replay position")
             chunks, rate = list(self._audio_chunks), self._audio_rate
+            evicted_before = self._audio_evicted_before
+        if self._audio_stream is None and self.audio_contract == SAMPLECLOCK_AUDIO:
+            return None
         if not chunks or rate is None:
+            if self.audio_contract == SAMPLECLOCK_AUDIO and self._audio_eof:
+                missing = np.full((80000, self._channels), np.nan, np.float32)
+                return missing[:, 0] if self._channels == 1 else missing
             raise MediaTimelineError("Audio window has not been decoded")
         source_start = self._video_origin + self.offset_seconds + start
         source_end = self._video_origin + self.offset_seconds + end
+        if evicted_before is not None and source_start < evicted_before - 1e-8:
+            raise MediaTimelineError("Audio window history was evicted")
         waveform = np.full((80000, self._channels), np.nan, np.float32)
         try:
             resampler = self._av_call(self._av.AudioResampler,
@@ -430,10 +484,10 @@ class MediaCursor:
                     store(converted)
             for converted in self._av_call(resampler.resample, None):
                 store(converted)
-            if not np.isfinite(waveform).all():
+            if self.audio_contract == LEGACY_AUDIO and not np.isfinite(waveform).all():
                 raise MediaTimelineError("Audio window has incomplete coverage or was evicted")
             result = waveform[:, 0] if self._channels == 1 else waveform
-            validate_audio(result)
+            (validate_aligned_pcm if self.audio_contract == SAMPLECLOCK_AUDIO else validate_audio)(result)
             return result
         except MediaTimelineError:
             raise
@@ -448,6 +502,10 @@ class MediaCursor:
                 "primed": self._primed, "last_av_error_type": self._last_av_error_type,
                 "last_av_error_phase": self._last_av_error_phase,
                 "audio_history_chunks": len(self._audio_chunks), "audio_end_seconds": self._audio_end,
+                "audio_contract": self.audio_contract,
+                "audio_clock_corrections": self._audio_clock_corrections,
+                "audio_real_discontinuities": self._audio_real_discontinuities,
+                "audio_recent_discontinuities": list(self._audio_gap_history),
                 "audio_max_clock_deviation_seconds": (
                     self._audio_max_clock_deviation / self._audio_rate if self._audio_rate else 0.0
                 ),

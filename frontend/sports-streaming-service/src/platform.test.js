@@ -345,9 +345,9 @@ test('same-URL logical camera and identity changes use an already aligned MainPl
   expect(video.currentTime).toBe(120.5);
 });
 
-test.each(['manual', 'automatic'])('%s selection changes caption tracks at the actual offset source time without replacing the player', async (kind) => {
+test.each(['manual', 'automatic'])('%s selection changes caption tracks at the actual offset source time without replacing pooled players', async (kind) => {
   localStorage.setItem('matchpulse-captions-enabled', 'true');
-  render(<App />);
+  const { container } = render(<App />);
   const socket = global.FakeWebSocket.instances.at(-1);
   const baseSession = { type: 'session', protocol_version: 1, session_id: 'caption-integration', sequence: 1,
     state: 'running', mode: 'features_mock', model_version: 'test-mock', server_time: Date.now() / 1000,
@@ -361,10 +361,22 @@ test.each(['manual', 'automatic'])('%s selection changes caption tracks at the a
     provider: 'elevenlabs', model: 'scribe_v2_realtime', state: 'partial', source_anchor_seconds: anchor,
     text: `Actual live fixture for ${feed.cameraId}.` });
   const video = screen.getByLabelText(`${FEEDS[0].label} video`);
+  const nodes = [...container.querySelectorAll('video')];
+  const destination = container.querySelector(`.tile[data-feed-id="${FEEDS[1].id}"] video`);
+  const destinationSource = destination.getAttribute('src');
+  expect(nodes).toHaveLength(FEEDS.length);
+  expect(destination).not.toBe(video);
   Object.defineProperty(video, 'readyState', { configurable: true, value: 2 });
   Object.defineProperty(video, 'duration', { configurable: true, value: 1000 });
   fireEvent.loadedMetadata(video); fireEvent.canPlay(video);
   expect(video.currentTime).toBe(120);
+  if (kind === 'automatic') {
+    // Auto can promote only an already decoded, aligned native pool player.
+    Object.defineProperty(destination, 'readyState', { configurable: true, value: 2 });
+    Object.defineProperty(destination, 'duration', { configurable: true, value: 1000 });
+    fireEvent.loadedMetadata(destination); fireEvent.canPlay(destination);
+    expect(destination.currentTime).toBe(200);
+  }
   act(() => socket.receive(liveEvent(FEEDS[0], 2, 1, 120)));
   expect(screen.getByText('Actual live fixture for cam-1.')).toBeInTheDocument();
   if (kind === 'manual') fireEvent.click(screen.getByRole('button', { name: FEEDS[1].label }));
@@ -372,9 +384,16 @@ test.each(['manual', 'automatic'])('%s selection changes caption tracks at the a
     model_version: 'test-mock', score_kind: 'mock', clock_epoch: 0, selected_match_id: 'cam-2', playback_time: 0, observation_end: 0,
     emitted_at: Date.now() / 1000, valid_until: Date.now() / 1000 + 3, scores: { 'cam-1': .1, 'cam-2': .9 } }));
   expect(screen.queryByText('Actual live fixture for cam-1.')).not.toBeInTheDocument();
-  expect(screen.getByLabelText(`${FEEDS[1].label} video`)).toBe(video);
-  fireEvent.loadedMetadata(video); fireEvent.canPlay(video);
-  expect(video.currentTime).toBe(200);
+  expect(screen.getByLabelText(`${FEEDS[1].label} video`)).toBe(destination);
+  expect(container.querySelector('.tile--main video')).toBe(destination);
+  expect(video.closest('.tile')).toHaveClass('tile--preview');
+  expect(destination.getAttribute('src')).toBe(destinationSource);
+  Object.defineProperty(destination, 'readyState', { configurable: true, value: 2 });
+  Object.defineProperty(destination, 'duration', { configurable: true, value: 1000 });
+  fireEvent.loadedMetadata(destination); fireEvent.canPlay(destination);
+  expect(destination.currentTime).toBe(200);
+  expect([...container.querySelectorAll('video')]).toHaveLength(nodes.length);
+  [...container.querySelectorAll('video')].forEach((node, index) => expect(node).toBe(nodes[index]));
   act(() => { socket.receive({ ...baseSession, sequence: 4, current_match_id: 'cam-2', captions: { ...baseSession.captions, generation: 2, match_id: 'cam-2' } });
     socket.receive(liveEvent(FEEDS[1], 5, 2, 200)); });
   expect(screen.getByText('Actual live fixture for cam-2.')).toBeInTheDocument();
@@ -382,14 +401,18 @@ test.each(['manual', 'automatic'])('%s selection changes caption tracks at the a
   if (kind === 'automatic') expect(socket.sent.filter((message) => message.type === 'ack')).toHaveLength(1);
 });
 
-test('all three pages keep the actual player and seven preview nodes mounted', async () => {
+test('all three pages keep all seven pooled match players mounted', async () => {
   fetch.mockImplementation((url) => reply(url.includes('/catalog') ? catalogue : url.includes('/standings') ? standings : { status: 'missing_key' }));
   const { container } = render(<App />);
   const videos = [...container.querySelectorAll('video')];
+  const focused = screen.getByLabelText(`${FEEDS[0].label} video`);
   const navigation = screen.getByRole('navigation', { name: 'Main navigation' });
   for (const name of ['Tables', 'News', 'Watch']) {
     await act(async () => fireEvent.click(within(navigation).getByRole('link', { name })));
-    expect([...container.querySelectorAll('video')]).toEqual(videos);
+    const current = [...container.querySelectorAll('video')];
+    expect(current).toHaveLength(videos.length);
+    current.forEach((node, index) => expect(node).toBe(videos[index]));
+    expect(container.querySelector('.tile--main video')).toBe(focused);
   }
-  expect(videos).toHaveLength(8);
+  expect(videos).toHaveLength(FEEDS.length);
 });

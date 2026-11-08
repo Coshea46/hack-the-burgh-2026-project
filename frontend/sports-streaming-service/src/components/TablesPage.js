@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Search, Trophy } from 'lucide-react';
-import { apiGet, safeWebUrl, updatedLabel } from '../platformApi';
+import { apiGet, isPlatformConnectionError, safeWebUrl, updatedLabel, useApiRecovery } from '../platformApi';
 import { searchCatalogue } from '../leagueSearch';
 import DataNotice from './DataNotice';
 
@@ -16,6 +16,9 @@ export default function TablesPage({ active }) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const [catalogueNetworkFailure, setCatalogueNetworkFailure] = useState(false);
+  const [standingsNetworkFailure, setStandingsNetworkFailure] = useState(false);
+  const recovery = useApiRecovery(active, catalogueNetworkFailure || standingsNetworkFailure, loading);
   const lastAttempt = useRef(0);
   useEffect(() => {
     if (!active) return undefined;
@@ -24,10 +27,13 @@ export default function TablesPage({ active }) {
     // Competition aliases are available immediately; real club rosters load in
     // the background from the provider's cached standings, without guesses.
     apiGet('/api/catalog').then((value) => { if (!cancelled && !enrichedApplied) setCatalogue(value); }).catch(() => {});
-    apiGet('/api/catalog', { load_teams: 1 }).then((value) => { if (!cancelled) { enrichedApplied = true; setCatalogue(value); } })
-      .catch(() => { if (!cancelled) setError('The league catalogue could not be reached.'); });
+    apiGet('/api/catalog', { load_teams: 1 }).then((value) => {
+      if (!cancelled) { enrichedApplied = true; setCatalogue(value); setCatalogueNetworkFailure(false); }
+    }).catch((reason) => {
+      if (!cancelled) { setCatalogueNetworkFailure(isPlatformConnectionError(reason)); setError(reason.message); }
+    });
     return () => { cancelled = true; };
-  }, [active]);
+  }, [active, recovery]);
   useEffect(() => {
     if (!active) return undefined;
     let cancelled = false;
@@ -36,11 +42,14 @@ export default function TablesPage({ active }) {
     setData(null);
     const refresh = attempt !== lastAttempt.current;
     lastAttempt.current = attempt;
-    apiGet('/api/standings', { competition }, refresh).then((value) => { if (!cancelled) setData(value); })
-      .catch((reason) => { if (!cancelled) setError(reason.message); }).finally(() => { if (!cancelled) setLoading(false); });
+    apiGet('/api/standings', { competition }, refresh).then((value) => {
+      if (!cancelled) { setData(value); setStandingsNetworkFailure(false); }
+    }).catch((reason) => {
+      if (!cancelled) { setStandingsNetworkFailure(isPlatformConnectionError(reason)); setError(reason.message); }
+    }).finally(() => { if (!cancelled) setLoading(false); });
     try { localStorage.setItem('matchpulse-league', competition); } catch {}
     return () => { cancelled = true; };
-  }, [active, competition, attempt]);
+  }, [active, competition, attempt, recovery]);
   const searchIndex = useMemo(() => {
     const teams = [...(catalogue?.teams || [])];
     for (const table of data?.tables || []) {

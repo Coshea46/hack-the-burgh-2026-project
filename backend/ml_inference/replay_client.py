@@ -14,6 +14,7 @@ from .config import APP_NAME
 from .replay_contract import (
     MATCHES_PER_GPU,
     MAX_GPU_WORKERS,
+    MAX_WORKER_BUDGET_USD,
     REPLAY_DICT,
     identifier,
     validate_control,
@@ -128,9 +129,12 @@ class ReplayClient:
             worker = self.sdk.Cls.from_name(APP_NAME, 'ReplayWorker')()
             for index, group in enumerate(groups):
                 spec = dict(session_spec)
+                # Deployed workers retain their original per-input ceiling.
+                # A larger parent allowance must not require a cloud redeploy.
+                spec['max_estimated_cost_usd'] = min(
+                    session_spec.get('max_estimated_cost_usd', 1) / count, MAX_WORKER_BUDGET_USD)
                 if count > 1:
-                    spec.update(matches=group, gpu_workers=1, shard_id=str(index),
-                                max_estimated_cost_usd=session_spec.get('max_estimated_cost_usd', 1) / count)
+                    spec.update(matches=group, gpu_workers=1, shard_id=str(index))
                     if 'mock_scores' in spec:
                         spec['mock_scores'] = {key: score for key, score in spec['mock_scores'].items()
                                                if key in active.match_groups[index]}

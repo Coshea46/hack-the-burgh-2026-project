@@ -11,6 +11,10 @@ MAX_MATCHES = 7
 MAX_GPU_WORKERS = 4
 MATCHES_PER_GPU = 2
 MAX_SESSION_SECONDS = 3600
+MAX_SESSION_BUDGET_USD = 20
+# Existing deployed workers accept this per-input ceiling. Larger service
+# allowances are partitioned without changing the deployed inference runtime.
+MAX_WORKER_BUDGET_USD = 10
 MAX_WORKER_RATE = .000164 + 8 * .0000131 + 8 * .00000222
 _ID = re.compile(r'^[A-Za-z0-9_.:-]{1,120}$')
 
@@ -39,7 +43,7 @@ def validate_session(spec, *, allow_local=False):
     if not isinstance(version, str) or not re.fullmatch(r'[A-Za-z0-9_.:/-]{1,160}', version):
         raise ValueError('model_version must be a bounded version identifier')
     duration = number(spec.get('max_duration_seconds', 300), 'max_duration_seconds', 5, MAX_SESSION_SECONDS)
-    ceiling = number(spec.get('max_estimated_cost_usd', 1), 'max_estimated_cost_usd', .01, 10)
+    ceiling = number(spec.get('max_estimated_cost_usd', 1), 'max_estimated_cost_usd', .01, MAX_SESSION_BUDGET_USD)
     number(spec.get('start_position', 0), 'start_position')
     matches = spec.get('matches')
     if not isinstance(matches, list) or not 1 <= len(matches) <= MAX_MATCHES:
@@ -82,6 +86,8 @@ def validate_control(session_id, control):
     number(control.get('expires_at'), 'expires_at')
     if type(control.get('active')) is not bool or type(control.get('playing')) is not bool:
         raise ValueError('Control active/playing flags must be boolean')
+    if 'startup_waiting' in control and type(control['startup_waiting']) is not bool:
+        raise ValueError('Control startup_waiting flag must be boolean')
     if type(control.get('clock_epoch', 0)) is not int or control.get('clock_epoch', 0) < 0:
         raise ValueError('clock_epoch must be nonnegative')
     return control

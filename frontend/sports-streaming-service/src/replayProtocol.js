@@ -12,6 +12,8 @@ export function readSession(message, previous) {
   if (message.type !== 'session' || message.protocol_version !== PROTOCOL_VERSION
     || typeof message.session_id !== 'string' || !message.session_id
     || typeof message.model_version !== 'string' || !message.model_version
+    || ['auto_available', 'auto_requested', 'auto_can_start', 'auto_starting', 'can_claim_control'].some((key) =>
+      message[key] !== undefined && typeof message[key] !== 'boolean')
     || !['real', 'features_mock', 'disabled'].includes(message.mode) || !validSequence(message.sequence)
     || !Number.isFinite(message.server_time)
     || !Number.isFinite(message.playback?.position) || message.playback.position < 0
@@ -25,7 +27,7 @@ export function readSession(message, previous) {
 // A single latest message is considered immediately. Held/disabled decisions
 // are discarded, never queued for playback after the viewer has moved on.
 export function validRecommendation(message, session, playback, now = Date.now() / 1000) {
-  if (!session || !['real', 'features_mock'].includes(session.mode)
+  if (!session || session.auto_available === false || !['real', 'features_mock'].includes(session.mode)
     || message.type !== 'recommendation' || message.protocol_version !== PROTOCOL_VERSION
     || message.session_id !== session.session_id || message.model_version !== session.model_version
     || !validSequence(message.sequence) || message.sequence <= session.sequence

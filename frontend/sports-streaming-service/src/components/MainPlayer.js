@@ -8,7 +8,7 @@ export function boundedTime(time, duration) {
 }
 
 // The DOM element survives every selection. Only a genuinely different URL loads.
-export default function MainPlayer({ feed, clock, seekTo, onPlayback, onAvailability, mediaRef, inferenceBuffering = false }) {
+export default function MainPlayer({ feed, clock, seekTo, onPlayback, onAvailability, mediaRef, inferenceBuffering = false, audioAllowed = true }) {
   const ref = useRef(null);
   const appliedSeek = useRef(null);
   const appliedRetry = useRef(0);
@@ -16,8 +16,10 @@ export default function MainPlayer({ feed, clock, seekTo, onPlayback, onAvailabi
   const offset = sourceOffset(feed);
   const callbacks = useRef({ onPlayback, onAvailability });
   const buffering = useRef(inferenceBuffering);
+  const audioPermission = useRef(audioAllowed);
   const resumeAfterBuffer = useRef(false);
   buffering.current = inferenceBuffering;
+  audioPermission.current = audioAllowed;
   callbacks.current = { onPlayback, onAvailability };
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -30,6 +32,10 @@ export default function MainPlayer({ feed, clock, seekTo, onPlayback, onAvailabi
     mediaRef.current = video;
     return () => { if (mediaRef.current === video) mediaRef.current = null; };
   }, [mediaRef]);
+
+  useLayoutEffect(() => {
+    ref.current.muted = !audioAllowed || ref.current.matchpulseAudioOwned === false || clock.current.muted;
+  }, [audioAllowed, clock]);
 
   useEffect(() => {
     const video = ref.current;
@@ -53,7 +59,7 @@ export default function MainPlayer({ feed, clock, seekTo, onPlayback, onAvailabi
       if (preparing || failed) return;
       clock.current.time = Math.max(0, video.currentTime - offset);
       clock.current.rate = video.playbackRate;
-      clock.current.muted = video.muted;
+      if (audioPermission.current && video.matchpulseAudioOwned !== false) clock.current.muted = video.muted;
       clock.current.volume = video.volume;
     };
     clock.current.sample = remember;
@@ -103,7 +109,7 @@ export default function MainPlayer({ feed, clock, seekTo, onPlayback, onAvailabi
       }
       video.playbackRate = target.rate;
       video.volume = target.volume;
-      video.muted = target.muted;
+      video.muted = target.muted || !audioPermission.current || video.matchpulseAudioOwned === false;
       const time = boundedTime(target.time + offset, video.duration);
       clock.current.time = Math.max(0, time - offset);
       if (Math.abs(video.currentTime - time) > 0.05) video.currentTime = time;
@@ -128,7 +134,7 @@ export default function MainPlayer({ feed, clock, seekTo, onPlayback, onAvailabi
     };
     const ended = () => { clock.current.playing = false; clock.current.ended = true; report(); };
     const listeners = {
-      loadedmetadata: metadata, canplay: resumed, seeked: resumed, error: fail,
+      loadedmetadata: metadata, loadeddata: ready, canplay: resumed, seeked: resumed, error: fail,
       timeupdate: remember, seeking, ratechange: report,
       volumechange: remember, play: playing, playing, pause: paused,
       waiting: stalled, stalled, ended,

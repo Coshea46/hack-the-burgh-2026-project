@@ -11,6 +11,14 @@ from pathlib import Path
 
 from .classifiers import MAX_CHECKPOINT_BYTES
 from .config import APP_NAME, MODEL_VOLUME, SCHEMA_VERSION
+from .model_release import (
+    CHECKPOINT_SHA256,
+    NEW_MODEL_VERSION,
+    PARAMETER_COUNT,
+    SELECTED_HEAD,
+    SMOKE_ATOL,
+    SOURCE_SHA256,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +44,9 @@ def install_checkpoint(trusted_checkpoint, *, version, expected_sha256, allow_cl
     digest = hashlib.sha256(payload).hexdigest()
     if digest != expected_sha256.lower():
         raise ValueError("Trusted checkpoint SHA256 mismatch; nothing uploaded")
+    selected = f"{version}/classifier.pt" == NEW_MODEL_VERSION
+    if selected and digest != CHECKPOINT_SHA256:
+        raise ValueError("Selected release requires its immutable checkpoint SHA256")
     sdk = sdk or importlib.import_module("modal")
     remote = f"{version}/classifier.pt"
     if not verify_only:
@@ -57,10 +68,23 @@ def install_checkpoint(trusted_checkpoint, *, version, expected_sha256, allow_cl
         raise
     if (not isinstance(readiness, dict) or readiness.get("bundle_sha256") != digest
             or readiness.get("model_version") != remote or readiness.get("schema") != SCHEMA_VERSION
-            or readiness.get("input_shape") != [75, 215] or readiness.get("audio_required") is not True
-            or readiness.get("architecture", {}).get("kind") != "gru"
-            or readiness.get("architecture", {}).get("hidden_size") != 64):
+            or readiness.get("input_shape") != [75, 215] or readiness.get("audio_required") is not True):
         raise ValueError("CPU readiness failed bundle/schema/version audit; deploy the current inference app")
+    architecture = readiness.get("architecture", {})
+    if selected:
+        smoke = readiness.get("smoke", {})
+        if (architecture.get("kind") != "temporal_gru" or architecture.get("input_size") != 68
+                or architecture.get("hidden_size") != 16 or architecture.get("heads") != 3
+                or architecture.get("parameter_count") != PARAMETER_COUNT
+                or readiness.get("selected_head") != SELECTED_HEAD
+                or readiness.get("audio_contract") != "sampleclock-v3"
+                or readiness.get("source_sha256") != SOURCE_SHA256 or smoke.get("passed") is not True
+                or smoke.get("atol") != SMOKE_ATOL or smoke.get("rtol") != 0
+                or not isinstance(smoke.get("absolute_difference"), (int, float))
+                or not 0 <= smoke["absolute_difference"] <= SMOKE_ATOL):
+            raise ValueError("CPU readiness failed selected release source/head/fixture audit")
+    elif architecture.get("kind") != "gru" or architecture.get("hidden_size") != 64:
+        raise ValueError("CPU readiness failed legacy architecture audit")
     return {"installed": not verify_only, "readiness_verified": True,
             "volume": MODEL_VOLUME, "checkpoint": remote, "sha256": digest, "readiness": readiness}
 

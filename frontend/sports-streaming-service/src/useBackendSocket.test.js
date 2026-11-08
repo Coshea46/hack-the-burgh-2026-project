@@ -52,3 +52,28 @@ test('an explicitly disabled backend creates no connection', () => {
   expect(global.FakeWebSocket.instances).toHaveLength(0);
   expect(outgoing.current({ type: 'playback' })).toBe(false);
 });
+
+test('only a current successful connection wakes failed data requests', () => {
+  jest.useFakeTimers();
+  const recovered = jest.fn();
+  window.addEventListener('matchpulse-backend-connected', recovered);
+  try {
+    const { unmount } = renderHook(() => useBackendSocket(() => {}, 'ws://test'));
+    const first = socket();
+    act(() => first.open());
+    expect(recovered).toHaveBeenCalledTimes(1);
+    act(() => first.drop());
+    expect(recovered).toHaveBeenCalledTimes(1);
+    act(() => jest.advanceTimersByTime(1000));
+    act(() => first.open());
+    expect(recovered).toHaveBeenCalledTimes(1);
+    act(() => socket().open());
+    expect(recovered).toHaveBeenCalledTimes(2);
+    unmount();
+    act(() => socket().open());
+    expect(recovered).toHaveBeenCalledTimes(2);
+  } finally {
+    window.removeEventListener('matchpulse-backend-connected', recovered);
+    jest.useRealTimers();
+  }
+});

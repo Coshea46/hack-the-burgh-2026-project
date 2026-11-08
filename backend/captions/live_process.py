@@ -14,11 +14,17 @@ from contextlib import suppress
 from threading import Lock, Thread
 from urllib.parse import urlsplit
 
+from .events import MAX_CAPTION_WORD_CHARS, bounded_caption_event, compact_transcript
+from .limits import (
+    DEFAULT_AUDIO_SECONDS,
+    DEFAULT_COST_USD,
+    LIVE_PRICE_PER_HOUR_USD,
+    validate_limits,
+)
 from .provider import CaptionError
 from .schema import canonical_json
 from .service import verify_source_identity
 
-LIVE_PRICE_PER_HOUR_USD = .39
 LIVE_MODEL = "scribe_v2_realtime"
 PROVIDER_ERROR_CODES = frozenset({
     "auth_error", "quota_exceeded", "rate_limited", "unaccepted_terms", "input_error", "invalid_request",
@@ -60,8 +66,7 @@ class BufferedRealtimeConnection:
         else:
             if not isinstance(value, dict) or not isinstance(value.get("text", ""), str):
                 return
-            value = {"text": value.get("text", "")[:12000],
-                     **({"words": value["words"][:1000]} if isinstance(value.get("words"), list) else {})}
+            value = compact_transcript(value)
         handlers = self._handlers.get(name, ())
         if handlers:
             for handler in tuple(handlers):
@@ -128,12 +133,12 @@ def valid_control(control, wall_now=time.time):
 
 
 class RealtimeEngine:
-    def __init__(self, control_reader, publish, *, max_audio_seconds=30, max_cost_usd=.01,
+    def __init__(self, control_reader, publish, *, max_audio_seconds=DEFAULT_AUDIO_SECONDS,
+                 max_cost_usd=DEFAULT_COST_USD,
                  api_key_present=False, audio_factory=None,
                  connect_factory=official_connect, identity_checker=verify_source_identity,
                  now=time.monotonic, wall_now=time.time):
-        if not 0 < max_audio_seconds <= 30 or not 0 < max_cost_usd <= .01:
-            raise ValueError("Caption budget exceeds its bounded trial")
+        validate_limits(max_audio_seconds, max_cost_usd)
         if audio_factory is None:
             from .stream_audio import ProgressiveAudioReader
             audio_factory = ProgressiveAudioReader
@@ -147,6 +152,8 @@ class RealtimeEngine:
                         "estimated_cost_usd": 0.0, "errors": 0, "generation_changes": 0,
                         "forced_provider_closes": 0,
                         "provider_session_started": False, "provider_close_code": None,
+                        "transcript_compactions": 0, "last_provider_text_chars": 0,
+                        "last_provider_word_count": 0, "transcript_events_dropped": 0,
                         "first_transcript_latency_seconds": None}
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="caption-audio")
         self._connected_since = None
@@ -161,13 +168,25 @@ class RealtimeEngine:
         values["estimated_cost_usd"] = values["provider_connected_seconds"] / 3600 * LIVE_PRICE_PER_HOUR_USD
         return values
 
-    def emit(self, control, state, **extra):
+    def emit(self, control, state, *, _transcript_compacted=False, **extra):
         event = {key: control.get(key) for key in ("session_id", "match_id", "source_key", "source_identity",
                                                   "generation", "clock_epoch")}
         event.update(type="caption", provider="elevenlabs", model=LIVE_MODEL, state=state, text="",
                      received_at=self.wall_now(), metrics=self._totals())
         event.update(extra)
-        self.publish(event)
+        bounded = bounded_caption_event(event)
+        if bounded is None:
+            self.metrics['transcript_events_dropped'] += 1
+            return
+        if state in ('partial', 'committed') and (_transcript_compacted
+                or bounded.get('text') != event.get('text') or bounded.get('words') != event.get('words')):
+            self.metrics['transcript_compactions'] += 1
+            bounded['metrics'] = self._totals()
+            bounded = bounded_caption_event(bounded)
+            if bounded is None:
+                self.metrics['transcript_events_dropped'] += 1
+                return
+        self.publish(bounded)
 
     @staticmethod
     def _token(control):
@@ -282,27 +301,33 @@ class RealtimeEngine:
             self.metrics["provider_sessions"] += 1
 
             def transcript(state, value, timestamps=False):
-                if not self._current(token) or failed.is_set():
+                if not self._current(token) or failed.is_set() or not isinstance(value, dict):
                     return
                 text = value.get("text", "") if isinstance(value, dict) else ""
-                if not isinstance(text, str) or len(text) > 12000:
+                if not isinstance(text, str):
                     return
-                extra = {"text": text, "source_anchor_seconds": anchor,
+                value = compact_transcript(value)
+                self.metrics['last_provider_text_chars'] = value['_provider_text_chars']
+                self.metrics['last_provider_word_count'] = value['_provider_word_count']
+                extra = {"text": value['text'], "source_anchor_seconds": anchor,
                          "observed_available_at": last_report_at, "observation_end": sent_end}
                 if self.metrics["first_transcript_latency_seconds"] is None and text and first_submit is not None:
                     self.metrics["first_transcript_latency_seconds"] = max(0, self.now() - first_submit)
                 if timestamps and anchor is not None:
                     words = []
-                    for word in value.get("words", [])[:1000]:
+                    for word in value.get("words", []):
+                        if not isinstance(word, dict):
+                            continue
                         a, b = word.get("start"), word.get("end")
                         if (not _finite(a) or not _finite(b) or not 0 <= a <= b
                                 or sent_end is None or anchor + b > sent_end + 1 / 16000
-                                or not isinstance(word.get("text"), str)):
+                                or not isinstance(word.get("text"), str)
+                                or len(word['text']) > MAX_CAPTION_WORD_CHARS):
                             continue
                         words.append({"text": word["text"], "start_seconds": anchor + a,
                                       "end_seconds": anchor + b, "type": word.get("type", "word")})
                     extra["words"] = words
-                self.emit(initial, state, **extra)
+                self.emit(initial, state, _transcript_compacted=value['_transcript_compacted'], **extra)
 
             def provider_error(value):
                 kind = value.get("message_type", "provider_error") if isinstance(value, dict) else "provider_error"
@@ -454,8 +479,8 @@ def main():
 
     async def run():
         engine = RealtimeEngine(current, publish,
-                                max_audio_seconds=float(os.environ.get("MATCHPULSE_CAPTION_MAX_AUDIO_SECONDS", "30")),
-                                max_cost_usd=float(os.environ.get("MATCHPULSE_CAPTION_BUDGET_USD", ".01")),
+                                max_audio_seconds=float(os.environ.get("MATCHPULSE_CAPTION_MAX_AUDIO_SECONDS", str(DEFAULT_AUDIO_SECONDS))),
+                                max_cost_usd=float(os.environ.get("MATCHPULSE_CAPTION_BUDGET_USD", str(DEFAULT_COST_USD))),
                                 api_key_present=bool(os.environ.get("ELEVENLABS_API_KEY")))
         task = asyncio.create_task(engine.run())
         while not state["eof"]:

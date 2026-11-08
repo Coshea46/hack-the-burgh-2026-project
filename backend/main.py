@@ -6,6 +6,7 @@ import os
 
 if __package__:
     from .captions import CaptionService
+    from .captions.limits import DEFAULT_AUDIO_SECONDS, DEFAULT_COST_USD
     from .football_platform import PlatformHTTPServer
     from .local_config import load_local_environment
     from .match_metadata import METADATA_PATH
@@ -13,6 +14,7 @@ if __package__:
     from .websocket_manager import WebSocketManager
 else:  # ``python main.py`` in the backend Docker image
     from captions import CaptionService
+    from captions.limits import DEFAULT_AUDIO_SECONDS, DEFAULT_COST_USD
     from football_platform import PlatformHTTPServer
     from local_config import load_local_environment
     from match_metadata import METADATA_PATH
@@ -22,18 +24,21 @@ else:  # ``python main.py`` in the backend Docker image
 
 class AppController:
     def __init__(self, *, registry=None, config=None, bridge=None, host=None, port=None,
-                 api_enabled=None, api_host=None, api_port=None, caption_worker=None):
+                 api_enabled=None, api_host=None, api_port=None, caption_worker=None,
+                 prepared_config=None, bridge_factory=None, preparation_error=None):
         load_local_environment()
         captions_enabled = os.environ.get("MATCHPULSE_CAPTIONS_ENABLED", "true").lower()
         if captions_enabled not in ("true", "false"):
             raise ValueError("MATCHPULSE_CAPTIONS_ENABLED must be true or false")
         self._captions_enabled = captions_enabled == "true"
         self._caption_configured = bool(os.environ.get("ELEVENLABS_API_KEY"))
-        self._caption_max_seconds = float(os.environ.get("MATCHPULSE_CAPTION_MAX_AUDIO_SECONDS", "30"))
-        self._caption_budget_usd = float(os.environ.get("MATCHPULSE_CAPTION_BUDGET_USD", "0.01"))
+        self._caption_max_seconds = float(os.environ.get("MATCHPULSE_CAPTION_MAX_AUDIO_SECONDS", str(DEFAULT_AUDIO_SECONDS)))
+        self._caption_budget_usd = float(os.environ.get("MATCHPULSE_CAPTION_BUDGET_USD", str(DEFAULT_COST_USD)))
         self.session = ReplaySession(registry or SourceRegistry.from_env(),
                                      config=config or SessionConfig.from_env(), bridge=bridge,
                                      caption_worker=caption_worker,
+                                     prepared_config=prepared_config, bridge_factory=bridge_factory,
+                                     preparation_error=preparation_error,
                                      caption_max_audio_seconds=self._caption_max_seconds,
                                      caption_max_cost_usd=self._caption_budget_usd)
         if caption_worker is None:

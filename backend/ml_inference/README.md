@@ -1,4 +1,4 @@
-﻿# MatchPulse streaming inference
+﻿# Touchline streaming inference
 
 The production path is `backend.main` → `ReplayWebSocketClient` → authenticated
 `ReplayWorker.web` ASGI sessions → compact scores → backend director → browser
@@ -8,6 +8,9 @@ transport selected with `MATCHPULSE_REPLAY_TRANSPORT=dict`.
 The former complete-window array API remains available for compatibility tests;
 it is no longer called by the application. See the root [README](../../README.md)
 for launch configuration.
+
+The product is named Touchline; existing `matchpulse` resource/package names,
+`MATCHPULSE_*` settings and authentication headers remain unchanged for compatibility.
 
 ## Runtime and timing contract
 
@@ -40,11 +43,12 @@ for launch configuration.
   float32 `(75,215)`, with audio in channels 210:215.
 * Reader queues hold at most 32 RGB samples; source native-audio history is
   bounded to 12 seconds / 32 MiB. No unbounded media queue or raw frame upload.
-* Original AAC clocks may be millisecond-quantized: a documented 2 ms cumulative
-  native clock tolerance admits measured S3 mux jitter, while larger gaps fail.
-  Crop native PCM to the completed interval before fresh resampling and flush;
-  retain stereo channels and research energy semantics. Missing audio fails,
-  never becomes fabricated silence.
+* The selected model uses the released `sampleclock-v3` native clock, preserving
+  genuine gaps as missing samples and repairing only channels 210:215. Native
+  PCM is cropped before FIR resampling; no future audio enters a window. The
+  frozen decoder and core-five feature parity are independently checked. The
+  explicit legacy model retains its original `legacy-gru` audio contract and
+  2 ms cumulative tolerance. Missing audio is never fabricated silence.
 * Each shard has one bounded daemon network thread with a persistent TLS socket,
   a latest control value and a latest compact snapshot. Server publication is
   coalesced, with one pending snapshot. Controls preserve the viewer's position,
@@ -63,7 +67,12 @@ caches, with no Modal SDK operation on the update path.
 
 The client reuses `ReplayClient` partitioning and strict session/model/epoch
 merging, with a monotonic sequence that remains unchanged on duplicate polls.
-All workers must be ready before playback leaves the startup buffer. EOF removes
+All workers must be ready before playback leaves the startup buffer. The backend's
+validated `startup_waiting` control keeps a fast shard out of the normal 30-second
+pause timer while the group is preparing, bounded by the existing 120-second
+startup/session deadline and fresh viewer lease. Clearing that barrier starts the
+ordinary idle countdown; older controls without the field retain their old guard.
+EOF removes
 ended sources and preserves remaining healthy sources. Stop sends inactive
 control and waits for a stopped acknowledgement emitted after the runner's
 `finally` cleanup, or a normal server close. A lost connection or missing
@@ -101,10 +110,31 @@ for the seven-source `python -m backend.demo` browser launch and settings contra
 
 ## Installed model and handoff
 
-The trusted portable full-audio GRU is installed as
+The default is `temporal-shots3_10-d63fff64480d/classifier.pt`, checkpoint SHA256
+`d63fff64480d00835c14bc7c726e062b00278126d517e1e9eceb1abe0aafbd1e`.
+`load_replay_scorer` delegates to the exact released
+`matchpulse.research.predictor.load_selected_predictor`, using `shots3_10`.
+Its raw `(75,215)` float32 observations become 34 value channels plus 34 validity
+channels with saved train-fitted normalization. The stateless one-layer GRU has
+68 inputs, hidden size 16, three heads and 4,179 parameters. It stays loaded on
+CPU beside GPU extraction; scoring requires no additional network hop.
+
+Canonical cloud readiness, release score parity (absolute error `4.66e-08`), six
+direct-source reference windows (zero feature difference) and a 30-second real
+seven-source replay passed. That replay delivered 13/13 full cohorts at endpoints
+5,7,...,29, with 1.734/1.859/2.109s minimum/median/maximum delivery latency. These
+are capacity and correctness results, not predictive-quality measurements.
+
+Auto is requested On by default but becomes effective only after monitoring
+readiness. The unchanged production modes differ from the research selection
+policy: Balanced rarely switches on the new raw scores. See the root README and
+`evaluate_director.py` for the validation replay, timing assumptions and limits.
+
+The explicit rollback portable full-audio GRU remains installed as
 `gru-stage1-02de8309/classifier.pt` in the inference-only Volume. Its SHA256 is
 `02de83095e5eaaf2f22978e89eec8515633ecd680ba0e9834cfb46d8cbea9319`.
-Actual CPU readiness and the final seven-source GPU real-model replay passed.
+Its CPU readiness was reverified under the deployed runtime. Historical legacy
+seven-source GPU real-model replay also passed.
 The 60-second run used four T4s, delivered all 28 recommendations with all seven
 source scores, and met the three-second gate. The prior
 Dict run computed all 20 per-match windows but delivered 8/10 recommendations;
@@ -126,7 +156,7 @@ python -m backend.ml_inference.install_checkpoint --allow-cloud --trusted-checkp
 $env:MATCHPULSE_MONITOR = 'true'
 $env:MATCHPULSE_ML_MODE = 'real'
 $env:MATCHPULSE_ML_CHECKPOINT = 'gru-stage1-02de8309/classifier.pt'
-$env:MATCHPULSE_MODEL_VERSION = 'gru-stage1-02de8309'
+$env:MATCHPULSE_MODEL_VERSION = 'gru-stage1-02de8309/classifier.pt'
 $env:MATCHPULSE_MOCK_SCORES_JSON = ''
 ```
 
@@ -146,7 +176,9 @@ checkpoint failures expose only bounded phases and static error codes.
 
 ## Deploy and validate
 
-The final local suite passed **442 Python tests**. Ordinary tests use NumPy, pytest
+The current full local suite passed **779 Python tests, with one optional
+Torch/runtime test skipped**. Separate installed-runtime checks passed 18 tests;
+the canonical cloud readiness gate also passed. Ordinary tests use NumPy, pytest
 and the backend WebSocket dependency, with
 no credentials, footage, CUDA or downloads:
 
@@ -163,8 +195,17 @@ python -m pip install modal==1.6.3
 $env:MATCHPULSE_ML_GPU = 'T4'
 $env:MATCHPULSE_ML_WEIGHTS = '../cheap-classifier-model-research/yolo26s.pt'
 python -B -m backend.ml_inference.overhaul_cloud setup-ws --allow-cloud
-python -B -m backend.ml_inference.overhaul_cloud deploy --allow-cloud
+python -B -m backend.ml_inference.winning_model deploy --allow-cloud
 ```
+
+For the current helper, use the verified application-local YOLO copy at
+`artifacts/model-release/yolo26s.pt`; the helper overrides the old sibling path
+before invoking Modal. Existing WebSocket credentials are reused. The current
+deployment/install/equivalence/probe operations use a separate $3 task ledger,
+preserving historical ledgers. See the root README for immutable selected-model
+installation and explicit legacy readiness commands. The preserved original
+runtime wheel is `runtime/matchpulse-0.1.0-py3-none-any.whl`; the selected wheel
+adds the new loader while retaining the validated legacy model API.
 
 Setup creates an inference-only proxy credential and the app Secret
 `matchpulse-inference-replay-auth`. The endpoint requires proxy authentication

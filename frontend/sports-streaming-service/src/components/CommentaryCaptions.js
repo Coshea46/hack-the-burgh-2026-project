@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Captions } from 'lucide-react';
 import { apiGet } from '../platformApi';
 import { getVideoUrl } from '../feeds';
 import { captionAt, readCaptionTrack } from '../captions';
 import useSourcePlayback, { SOURCE_LOAD_EVENT } from '../useSourcePlayback';
-import { liveCaptionStatus } from '../liveCaptions';
+import { captionSessionEnded, liveCaptionStatus } from '../liveCaptions';
 
 const enabledPreference = () => { try { return localStorage.getItem('matchpulse-captions-enabled') === 'true'; } catch { return false; } };
 export const CAPTION_READY_REFRESH_MS = 240000;
@@ -16,6 +16,7 @@ export default function CommentaryCaptions({ feed, mediaRef, live, enabled: cont
   const enabled = controlledEnabled ?? localEnabled;
   const isLive = live !== undefined;
   const [result, setResult] = useState(null);
+  const captionTextRef = useRef(null);
   const { cameraId, sourceKey, sourceIdentity } = feed;
   const source = `${getVideoUrl(feed)}\n${feed.cameraId}\n${feed.sourceKey || ''}\n${feed.sourceIdentity || ''}`;
   const time = useSourcePlayback(mediaRef, source, enabled);
@@ -92,7 +93,11 @@ export default function CommentaryCaptions({ feed, mediaRef, live, enabled: cont
   const track = result?.source === source ? result.track : null;
   const liveMatches = live?.match_id === cameraId && live?.source_key === sourceKey
     && (!sourceIdentity || live?.source_identity === sourceIdentity);
-  const text = enabled ? isLive ? liveMatches && connected && time !== null ? live.text || '' : '' : captionAt(track, time) : '';
+  const text = enabled ? isLive ? liveMatches && connected && !captionSessionEnded(live) && time !== null ? live.text || '' : '' : captionAt(track, time) : '';
+  useEffect(() => {
+    const node = captionTextRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [text]);
   const covered = Number.isFinite(time) && track?.coverage_intervals?.some((interval) => interval.start_seconds <= time && time < interval.end_seconds);
   const status = isLive ? liveCaptionStatus(live, connected, canControl)
     : !feed.sourceKey ? 'Captions unavailable for this source.'
@@ -101,10 +106,11 @@ export default function CommentaryCaptions({ feed, mediaRef, live, enabled: cont
         : !track ? 'Captions unavailable. No commentary track has been generated for this source.'
         : time === null ? 'Captions follow the player when the source is ready.'
           : !text ? covered ? 'No commentary at this moment.' : 'No caption track covers this part of the replay.' : '';
-  const caption = <div className={`caption-text ${isLive && live?.state === 'partial' ? 'caption-text--partial' : ''}`} aria-live="polite" aria-atomic="true">{text}</div>;
+  const caption = <div ref={captionTextRef} tabIndex={text ? 0 : undefined} className={`caption-text ${isLive && live?.state === 'partial' ? 'caption-text--partial' : ''}`} aria-live="polite" aria-atomic="true">{text}</div>;
   return <section className="commentary-captions" aria-label="Commentary captions">
     <div className="caption-controls"><div className="caption-heading"><Captions size={21} aria-hidden="true" /><h2>Commentary captions</h2></div>
       <button className={`caption-toggle ${enabled ? 'is-on' : ''}`} aria-label={`Commentary captions ${enabled ? 'On' : 'Off'}`} aria-pressed={enabled}
+          title={isLive ? 'Caption preference. The status below shows whether live transcription is available.' : undefined}
           onClick={() => { setEnabled(!enabled); onToggle?.(!enabled); }}><span className="caption-switch" aria-hidden="true"><i /></span><span>{enabled ? 'On' : 'Off'}</span></button>
     </div>
     {enabled && <>
